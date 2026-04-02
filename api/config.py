@@ -510,8 +510,8 @@ def get_available_models() -> dict:
                 if model_id and model_name:
                     auto_detected_models.append({'id': model_id, 'label': model_name})
                     detected_providers.add(provider.lower())
-        except Exception as e:
-            logger.debug(f"Failed to fetch models from custom endpoint: {e}")
+        except Exception:
+            pass  # custom endpoint unreachable or misconfigured -- fail silently
 
     # 5. Build model groups
     if detected_providers:
