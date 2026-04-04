@@ -103,14 +103,25 @@ async function send(){
   // ── Shared SSE handler wiring (used for initial connection and reconnect) ──
   let _reconnectAttempted=false;
 
+  // rAF-throttled rendering: buffer tokens, render at most once per frame
+  let _renderPending=false;
+  function _scheduleRender(){
+    if(_renderPending) return;
+    _renderPending=true;
+    requestAnimationFrame(()=>{
+      _renderPending=false;
+      if(assistantBody) assistantBody.innerHTML=renderMd(assistantText);
+      scrollIfPinned();
+    });
+  }
+
   function _wireSSE(source){
     source.addEventListener('token',e=>{
       if(!S.session||S.session.session_id!==activeSid) return;
       const d=JSON.parse(e.data);
       assistantText+=d.text;
       ensureAssistantRow();
-      assistantBody.innerHTML=renderMd(assistantText);
-      scrollIfPinned();
+      _scheduleRender();
     });
 
     source.addEventListener('tool',e=>{
