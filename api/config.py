@@ -778,6 +778,8 @@ _SETTINGS_DEFAULTS = {
     'check_for_updates': True,  # check if webui/agent repos are behind upstream
     'theme': 'dark',  # active UI theme name (no enum gate -- allows custom themes)
     'bot_name': os.getenv('HERMES_WEBUI_BOT_NAME', 'Hermes'),  # display name for the assistant
+    'sound_enabled': False,  # play notification sound when assistant finishes
+    'notifications_enabled': False,  # browser notification when tab is in background
     'password_hash': None,  # PBKDF2-HMAC-SHA256 hash; None = auth disabled
 }
 
@@ -797,7 +799,7 @@ _SETTINGS_ALLOWED_KEYS = set(_SETTINGS_DEFAULTS.keys()) - {'password_hash'}
 _SETTINGS_ENUM_VALUES = {
     'send_key': {'enter', 'ctrl+enter'},
 }
-_SETTINGS_BOOL_KEYS = {'show_token_usage', 'show_cli_sessions', 'sync_to_insights', 'check_for_updates'}
+_SETTINGS_BOOL_KEYS = {'show_token_usage', 'show_cli_sessions', 'sync_to_insights', 'check_for_updates', 'sound_enabled', 'notifications_enabled'}
 
 def save_settings(settings: dict) -> dict:
     """Save settings to disk. Returns the merged settings. Ignores unknown keys."""

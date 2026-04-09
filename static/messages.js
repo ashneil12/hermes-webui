@@ -172,6 +172,8 @@ async function send(){
       const d=JSON.parse(e.data);
       d._session_id=activeSid;
       showApprovalCard(d);
+      playNotificationSound();
+      sendBrowserNotification('Approval required',d.description||'Tool approval needed');
     });
 
     source.addEventListener('done',e=>{
@@ -205,6 +207,8 @@ async function send(){
         syncTopbar();renderMessages();loadDir('.');
       }
       renderSessionList();setBusy(false);setStatus('');
+      playNotificationSound();
+      sendBrowserNotification('Response complete',assistantText?assistantText.slice(0,100):'Task finished');
     });
 
     source.addEventListener('compressed',e=>{
@@ -389,5 +393,37 @@ function startApprovalPolling(sid) {
 function stopApprovalPolling() {
   if (_approvalPollTimer) { clearInterval(_approvalPollTimer); _approvalPollTimer = null; }
 }
+
+// ── Notifications and Sound ──────────────────────────────────────────────────
+
+function playNotificationSound(){
+  if(!window._soundEnabled) return;
+  try{
+    const ctx=new (window.AudioContext||window.webkitAudioContext)();
+    const osc=ctx.createOscillator();
+    const gain=ctx.createGain();
+    osc.connect(gain);gain.connect(ctx.destination);
+    osc.type='sine';osc.frequency.setValueAtTime(660,ctx.currentTime);
+    osc.frequency.setValueAtTime(880,ctx.currentTime+0.1);
+    gain.gain.setValueAtTime(0.3,ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01,ctx.currentTime+0.3);
+    osc.start(ctx.currentTime);osc.stop(ctx.currentTime+0.3);
+    osc.onended=()=>ctx.close();
+  }catch(e){console.warn('Notification sound failed:',e);}
+}
+
+function sendBrowserNotification(title,body){
+  if(!window._notificationsEnabled||!document.hidden) return;
+  if(!('Notification' in window)) return;
+  const botName=window._botName||'Hermes';
+  if(Notification.permission==='granted'){
+    new Notification(title||botName,{body:body});
+  }else if(Notification.permission!=='denied'){
+    Notification.requestPermission().then(p=>{
+      if(p==='granted') new Notification(title||botName,{body:body});
+    });
+  }
+}
+
 // ── Panel navigation (Chat / Tasks / Skills / Memory) ──
 
