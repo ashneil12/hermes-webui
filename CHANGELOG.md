@@ -1,5 +1,29 @@
 # Hermes Web UI -- Changelog
 
+## [v0.50.43] fix: markdown link rendering + KaTeX CSP fonts
+
+**Markdown link rendering — `renderMd()` in `static/ui.js`** (PR #475, fixes #470)
+
+Three related bugs fixed:
+
+1. **Double-linking via autolink pass** — `[label](url)` was converted to `<a href="...">`, then the bare-URL autolink pass re-matched the URL sitting inside `href="..."` and wrapped it in a second `<a>` tag. Fixed with three stash/restore layers: `\x00L` (inlineMd labeled links), `\x00A` (existing `<a>` tags before outer link pass), `\x00B` (existing `<a>` tags before autolink pass).
+
+2. **`esc()` on `href` values corrupts query strings** — `esc()` is HTML-entity encoding; applying it to URLs converted `&` → `&amp;` in query strings. Removed `esc()` from href values in all three locations. Display text (link labels) still uses `esc()` for XSS safety. `"` in URLs replaced with `%22` (URL encoding) to close the attribute-injection vector identified during review.
+
+3. **Backtick code spans inside `**bold**` rendered as `&lt;code&gt;`** — `esc()` was applied to code spans after bold/italic processing. Added `\x00C` stash to protect backtick spans in `inlineMd()` before bold/italic regex runs.
+
+**Security audit:** `javascript:` injection blocked by `https?://` prefix requirement. `"` attribute breakout fixed by `.replace(/"/g, '%22')`. Label/display text still HTML-escaped.
+
+24 tests in `tests/test_issue470.py`.
+
+**KaTeX CSP font-src** (fixes #477)
+
+`api/helpers.py` CSP `font-src` now includes `https://cdn.jsdelivr.net` so KaTeX math rendering fonts load correctly. Previously ~50 CSP font-blocking errors appeared in the console on any page with math content. The CDN was already allowed in `script-src` and `style-src` for KaTeX JS/CSS — this extends the same allowance to fonts.
+
+3 tests in `tests/test_issue477.py`.
+
+- Total tests: TBD (was 1130)
+
 ## [v0.50.42] fix: session display + model UX polish (sprint 42)
 
 **Context indicator always shows latest usage** (PR #471, fixes #437)
