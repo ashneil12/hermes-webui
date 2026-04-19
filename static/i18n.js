@@ -147,6 +147,8 @@ const LOCALES = {
     failed_colon: 'Failed: ',
     // ui.js
     no_workspace: 'No workspace',
+    workspace_empty_no_path: 'No workspace selected. Set a workspace in Settings \u2192 Workspace to browse files.',
+    workspace_empty_dir: 'This workspace is empty.',
     dialog_confirm_title: 'Confirm action',
     dialog_prompt_title: 'Enter a value',
     dialog_confirm_btn: 'Confirm',
@@ -255,7 +257,7 @@ const LOCALES = {
     settings_label_sound: 'Notification sound',
     settings_desc_sound: 'Play a sound when the assistant finishes a response.',
     settings_label_notifications: 'Browser notifications',
-    settings_desc_notifications: 'Show a system notification when a response completes while the tab is in the background.',
+    settings_desc_notifications: 'Show a system notification when a response completes while the app is in the background.',
     settings_desc_token_usage: 'Displays input/output token count below each assistant reply. Also toggled with /usage.',
     settings_desc_bubble_layout: 'Right-align user messages and left-align assistant replies. Off by default to keep code blocks and tool output full-width.',
     settings_desc_cli_sessions: 'Merges sessions from the Hermes CLI (state.db) into the session list. Click a CLI session to import it and continue the conversation.',
@@ -572,6 +574,8 @@ const LOCALES = {
     failed_colon: 'Error: ',
     // ui.js
     no_workspace: 'Sin espacio de trabajo',
+    workspace_empty_no_path: 'No hay espacio de trabajo seleccionado. Configure un espacio de trabajo en Ajustes \u2192 Workspace para explorar archivos.',
+    workspace_empty_dir: 'Este espacio de trabajo está vacío.',
     // workspace.js
     unsaved_confirm: 'Tienes cambios sin guardar en la vista previa. ¿Descartar y navegar?',
     save: 'Guardar',
@@ -985,6 +989,8 @@ const LOCALES = {
     failed_colon: 'Fehlgeschlagen: ',
     // ui.js
     no_workspace: 'Kein Workspace',
+    workspace_empty_no_path: 'Kein Workspace ausgewählt. Wähle einen Workspace unter Einstellungen \u2192 Workspace, um Dateien zu durchsuchen.',
+    workspace_empty_dir: 'Dieser Workspace ist leer.',
     dialog_confirm_title: 'Aktion bestätigen',
     dialog_prompt_title: 'Wert eingeben',
     dialog_confirm_btn: 'Bestätigen',
@@ -1199,6 +1205,9 @@ const LOCALES = {
     theme_usage: '\u7528\u6cd5\uff1a/theme ',
     theme_set: '\u4e3b\u9898\uff1a',
     no_active_session: '\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u4f1a\u8bdd',
+
+    workspace_empty_no_path: '未选择工作区。请在 设置 → 工作区 中设置工作区以浏览文件。',
+    workspace_empty_dir: '此工作区为空。',
     no_personalities: '\u6ca1\u6709\u627e\u5230\u4eba\u8bbe\uff08\u53ef\u6dfb\u52a0\u5230 ~/.hermes/personalities/\uff09',
     available_personalities: '\u53ef\u7528\u4eba\u8bbe\uff1a',
     personality_switch_hint: '\n\n\u4f7f\u7528 `/personality <name>` \u5207\u6362\uff0c\u6216\u7528 `/personality none` \u6e05\u7a7a\u3002',
@@ -1611,6 +1620,9 @@ const LOCALES = {
     theme_usage: '\u7528\u6cd5\uff1a/theme ',
     theme_set: '\u4e3b\u984c\uff1a',
     no_active_session: '\u7576\u524d\u6c92\u6709\u6d3b\u52d5\u6703\u8a71',
+
+    workspace_empty_no_path: '未選擇工作區。請在 設定 → 工作區 中設定工作區以瀏覽檔案。',
+    workspace_empty_dir: '此工作區為空。',
     no_personalities: '\u6c92\u6709\u627e\u5230\u4eba\u8a2d\uff08\u53ef\u6dfb\u52a0\u5230 ~/.hermes/personalities/\uff09',
     available_personalities: '\u53ef\u7528\u4eba\u8a2d\uff1a',
     personality_switch_hint: '\n\n\u4f7f\u7528 `/personality <name>` \u5207\u63db\uff0c\u6216\u7528 `/personality none` \u6e05\u7a7a\u3002',

@@ -229,8 +229,17 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   let _renderPending=false;
   // Extract display text from assistantText, stripping completed thinking blocks
   // and hiding content still inside an open thinking block.
+  function _stripXmlToolCalls(s){
+    // Strip <function_calls>...</function_calls> blocks (DeepSeek XML tool syntax).
+    // These are processed as tool calls server-side; showing them raw in the bubble
+    // looks broken. Also handles orphaned opening tags mid-stream. (#702)
+    if(!s||s.toLowerCase().indexOf('<function_calls>')===-1) return s;
+    s=s.replace(/<function_calls>[\s\S]*?<\/function_calls>/gi,'');
+    s=s.replace(/<function_calls>[\s\S]*$/i,'');
+    return s.trim();
+  }
   function _streamDisplay(){
-    const raw=assistantText;
+    const raw=_stripXmlToolCalls(assistantText);
     if(reasoningText) return raw;
     for(const {open,close} of _thinkPairs){
       // Trim leading whitespace before checking for the open tag — some models
@@ -252,7 +261,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     return raw;
   }
   function _parseStreamState(){
-    const raw=assistantText;
+    const raw=_stripXmlToolCalls(assistantText);
     if(reasoningText){
       return {thinkingText:liveReasoningText, displayText:_streamDisplay(), inThinking:false};
     }

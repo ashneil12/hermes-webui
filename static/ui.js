@@ -463,6 +463,17 @@ function getModelLabel(modelId){
   return modelId.split('/').pop()||'Unknown';
 }
 
+function _stripXmlToolCallsDisplay(s){
+  // Strip <function_calls>...</function_calls> blocks emitted by DeepSeek and
+  // similar models in their raw response text.  These are processed separately
+  // as tool calls; leaving them in the content causes them to render visibly
+  // in the settled chat bubble.  (#702)
+  if(!s||s.toLowerCase().indexOf('<function_calls>')===-1) return s;
+  s=s.replace(/<function_calls>[\s\S]*?<\/function_calls>/gi,'');
+  s=s.replace(/<function_calls>[\s\S]*$/i,'');
+  return s.trim();
+}
+
 function renderMd(raw){
   let s=raw||'';
   // ── MEDIA: token stash (must run first, before any other processing) ───────
@@ -1459,7 +1470,7 @@ function renderMessages(){
     if(m.attachments&&m.attachments.length){
       filesHtml=`<div class="msg-files">${m.attachments.map(f=>`<div class="msg-file-badge">${li('paperclip',12)} ${esc(f)}</div>`).join('')}</div>`;
     }
-    const bodyHtml = isUser ? esc(String(content)).replace(/\n/g,'<br>') : renderMd(String(content));
+    const bodyHtml = isUser ? esc(String(content)).replace(/\n/g,'<br>') : renderMd(_stripXmlToolCallsDisplay(String(content)));
     const editBtn  = isUser  ? `<button class="msg-action-btn" title="${t('edit_message')}" onclick="editMessage(this)">${li('pencil',13)}</button>` : '';
     const retryBtn = isLastAssistant ? `<button class="msg-action-btn" title="${t('regenerate')}" onclick="regenerateResponse(this)">${li('rotate-ccw',13)}</button>` : '';
     const copyBtn  = `<button class="msg-copy-btn msg-action-btn" title="${t('copy')}" onclick="copyMsg(this)">${li('copy',13)}</button>`;
@@ -2135,6 +2146,20 @@ function renderFileTree(){
   const box=$('fileTree');box.innerHTML='';
   // Cache current dir entries
   S._dirCache[S.currentDir||'.']=S.entries;
+  // Show empty-state when no workspace is set or the directory is empty (#703)
+  const emptyEl=$('wsEmptyState');
+  const hasWorkspace=!!(S.session&&S.session.workspace);
+  if(!hasWorkspace){
+    if(emptyEl){emptyEl.textContent=t('workspace_empty_no_path');emptyEl.style.display='flex';}
+    box.style.display='none';
+    return;
+  }
+  if(emptyEl) emptyEl.style.display='none';
+  box.style.display='';
+  if(!S.entries||!S.entries.length){
+    if(emptyEl){emptyEl.textContent=t('workspace_empty_dir');emptyEl.style.display='flex';}
+    return;
+  }
   _renderTreeItems(box, S.entries, 0);
 }
 

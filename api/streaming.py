@@ -74,6 +74,25 @@ def _strip_thinking_markup(text: str) -> str:
     return s
 
 
+def _strip_xml_tool_calls(text: str) -> str:
+    """Strip XML-style function_calls blocks that DeepSeek and similar models
+    emit in their raw response text.  These blocks are processed separately as
+    tool calls; leaving them in the assistant content causes them to render
+    visibly in the chat bubble.
+
+    Handles both complete blocks (<function_calls>…</function_calls>) and
+    partial/orphaned opening tags that may appear at the tail of a stream.
+    """
+    if not text or '<function_calls>' not in text.lower():
+        return text
+    s = str(text)
+    # Strip complete blocks (possibly multiple)
+    s = re.sub(r'<function_calls>.*?</function_calls>', '', s, flags=re.IGNORECASE | re.DOTALL)
+    # Strip orphaned opening tags (stream cut off before closing tag)
+    s = re.sub(r'<function_calls>.*$', '', s, flags=re.IGNORECASE | re.DOTALL)
+    return s.strip()
+
+
 def _sanitize_generated_title(text: str) -> str:
     """Sanitize LLM-generated title text before persisting to session."""
     s = _strip_thinking_markup(text or '')
@@ -1137,6 +1156,21 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
                 _previous_messages,
                 result.get('messages') or s.messages,
             )
+            # Strip XML tool-call blocks from assistant message content.
+            # DeepSeek and some other providers emit <function_calls>...</function_calls>
+            # in the raw response text; this must be removed before the content is
+            # saved to the session and displayed in the chat bubble. (#702)
+            for _m in s.messages:
+                if isinstance(_m, dict) and _m.get('role') == 'assistant':
+                    _raw_content = _m.get('content')
+                    if isinstance(_raw_content, str):
+                        _cleaned = _strip_xml_tool_calls(_raw_content)
+                        if _cleaned != _raw_content:
+                            _m['content'] = _cleaned
+                    elif isinstance(_raw_content, list):
+                        for _part in _raw_content:
+                            if isinstance(_part, dict) and isinstance(_part.get('text'), str):
+                                _part['text'] = _strip_xml_tool_calls(_part['text'])
 
             # ── Detect silent agent failure (no assistant reply produced) ──
             # When the agent catches an auth/network error internally it may return
