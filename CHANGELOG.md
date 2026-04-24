@@ -5,6 +5,11 @@
 ### Fixed
 - **Reasoning chip now appears after the model chip** in the composer toolbar — model is a more fundamental choice and should be stable in position regardless of whether reasoning is active. Order: Profile → Workspace → Model → Reasoning. (`static/index.html`)
 
+## v0.50.203 — 2026-04-24
+
+### Fixed
+- **Queue drain race condition — drain the correct session after cross-session stream completion** — `setBusy(false)` was draining `S.session.session_id` (the *currently viewed* session) rather than the session that just finished streaming. When the user switched sessions mid-stream, queued follow-up messages for the original session were silently dropped. A new `_queueDrainSid` variable is set to `activeSid` just before calling `setBusy(false)` in all stream terminal handlers; `setBusy()` reads it once and clears it. (`static/messages.js`, `static/ui.js`, `tests/test_regressions.py`) By @24601. [#964]
+
 ## v0.50.202 — 2026-04-24
 
 ### Fixed
