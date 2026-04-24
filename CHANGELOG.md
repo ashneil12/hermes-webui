@@ -5,6 +5,11 @@
 ### Fixed
 - **Reasoning chip now appears after the model chip** in the composer toolbar — model is a more fundamental choice and should be stable in position regardless of whether reasoning is active. Order: Profile → Workspace → Model → Reasoning. (`static/index.html`)
 
+## v0.50.202 — 2026-04-24
+
+### Fixed
+- **Throttle inflight localStorage persist to prevent GC crash** — `saveInflightState()` was called on every token, doing `JSON.parse` + mutate + `JSON.stringify` + `localStorage.setItem` on the full inflight state map. At 60 tok/s with a 10KB messages array this produced ~36MB of JSON churn per second, the primary GC pressure source causing Chrome renderer crashes (error codes 4/5). A `_throttledPersist()` wrapper now batches writes to at most once per 2 seconds. State transitions (done/apperror/cancel/error) still flush synchronously so no more than 2s of progress is lost on a crash. (`static/messages.js`) By @24601. [#972]
+
 ## v0.50.201 — 2026-04-24
 
 ### Fixed
