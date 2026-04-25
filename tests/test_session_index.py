@@ -114,6 +114,14 @@ def test_all_sessions_backfills_last_message_at_for_legacy_index_rows():
     assert rows[0]["session_id"] == s.session_id
     assert rows[0]["last_message_at"] == 100.0
 
+    # Backfill must also be persisted to the index so subsequent /api/sessions
+    # polls don't re-read every legacy session file.  Without this, a 5-second
+    # poll cycle re-loads every legacy session JSON on every tick until each
+    # session is independently saved.
+    persisted = _read_index(index_file)
+    assert persisted[0]["session_id"] == s.session_id
+    assert persisted[0].get("last_message_at") == 100.0
+
 
 # ── 6. test_incremental_patch_correctness ─────────────────────────────────
 

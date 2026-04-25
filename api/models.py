@@ -443,11 +443,21 @@ def all_sessions():
                 s for s in index
                 if _index_entry_exists(s.get('session_id'))
             ]
+            backfilled = []
             for i, s in enumerate(index):
                 if 'last_message_at' not in s:
                     full = Session.load(s.get('session_id'))
                     if full:
                         index[i] = full.compact()
+                        backfilled.append(full)
+            # Persist last_message_at to the on-disk index so subsequent
+            # /api/sessions polls don't re-read every legacy session file.
+            # Best-effort: failure here just means we re-backfill next poll.
+            if backfilled:
+                try:
+                    _write_session_index(updates=backfilled)
+                except Exception:
+                    logger.debug("Failed to persist last_message_at backfill")
             for s in index:
                 s['is_streaming'] = _is_streaming_session(
                     s.get('active_stream_id'),
