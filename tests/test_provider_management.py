@@ -98,6 +98,33 @@ class TestGetProviders:
             assert "anthropic" in provider_ids
             assert "openai" in provider_ids
             assert "openrouter" in provider_ids
+            assert "crof" in provider_ids
+        finally:
+            config.cfg.clear()
+            config.cfg.update(old_cfg)
+            config._cfg_mtime = old_mtime
+
+    def test_crof_provider_is_configurable(self, monkeypatch, tmp_path):
+        """CrofAI should be exposed as an API-key configurable provider."""
+        _install_fake_hermes_cli(monkeypatch)
+        monkeypatch.setattr(profiles, "get_active_hermes_home", lambda: tmp_path)
+
+        old_cfg = dict(config.cfg)
+        old_mtime = config._cfg_mtime
+        config.cfg.clear()
+        config.cfg["model"] = {}
+        try:
+            config._cfg_mtime = config.Path(config._get_config_path()).stat().st_mtime
+        except Exception:
+            config._cfg_mtime = 0.0
+
+        from api.providers import get_providers
+        try:
+            result = get_providers()
+            providers = {p["id"]: p for p in result["providers"]}
+            assert providers["crof"]["display_name"] == "CrofAI"
+            assert providers["crof"]["configurable"] is True
+            assert providers["crof"]["models"]
         finally:
             config.cfg.clear()
             config.cfg.update(old_cfg)
@@ -194,6 +221,36 @@ class TestSetProviderKey:
             assert env_path.exists(), f".env not written to {env_path}; HERMES_HOME={__import__('os').environ.get('HERMES_HOME')!r}"
             content = env_path.read_text()
             assert "ANTHROPIC_API_KEY=sk-ant-test-key-12345678" in content
+        finally:
+            config.cfg.clear()
+            config.cfg.update(old_cfg)
+            config._cfg_mtime = old_mtime
+
+    def test_set_crof_key_writes_openai_compatible_env(self, monkeypatch, tmp_path):
+        """CrofAI uses the OpenAI-compatible API key env var for the runtime."""
+        _install_fake_hermes_cli(monkeypatch)
+        monkeypatch.setattr(profiles, "get_active_hermes_home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        old_cfg = dict(config.cfg)
+        old_mtime = config._cfg_mtime
+        config.cfg.clear()
+        config.cfg["model"] = {}
+        try:
+            config._cfg_mtime = config.Path(config._get_config_path()).stat().st_mtime
+        except Exception:
+            config._cfg_mtime = 0.0
+
+        from api.providers import set_provider_key
+        try:
+            result = set_provider_key("crof", "nahcrof_test_key_12345678")
+            assert result["ok"] is True
+            assert result["provider"] == "crof"
+
+            env_path = tmp_path / ".env"
+            assert env_path.exists()
+            content = env_path.read_text()
+            assert "OPENAI_API_KEY=nahcrof_test_key_12345678" in content
         finally:
             config.cfg.clear()
             config.cfg.update(old_cfg)
