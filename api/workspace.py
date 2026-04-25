@@ -223,6 +223,7 @@ def _workspace_blocked_roots() -> tuple[Path, ...]:
     return (
         # Linux / macOS
         Path('/etc'),
+        Path('/private/etc'),
         Path('/usr'),
         Path('/var'),
         Path('/bin'),
@@ -387,13 +388,8 @@ def resolve_trusted_workspace(path: str | Path | None = None) -> Path:
 
     # Block known system roots and their children
     for blocked in _workspace_blocked_roots():
-        try:
-            candidate.relative_to(blocked)
+        if _is_within(candidate, blocked):
             raise ValueError(f"Path points to a system directory: {candidate}")
-        except ValueError as e:
-            if "system directory" in str(e):
-                raise
-            # relative_to raised ValueError = candidate is NOT under blocked = safe
 
     # (A) Trusted if under the user's home directory — cross-platform via Path.home()
     try:
@@ -451,12 +447,8 @@ def validate_workspace_to_add(path: str) -> Path:
 
     # Block known system roots and their immediate children
     for blocked in _workspace_blocked_roots():
-        try:
-            candidate.relative_to(blocked)
+        if _is_within(candidate, blocked):
             raise ValueError(f"Path points to a system directory: {candidate}")
-        except ValueError as e:
-            if "system directory" in str(e):
-                raise
 
     return candidate
 
