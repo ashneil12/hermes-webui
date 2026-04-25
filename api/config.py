@@ -521,6 +521,7 @@ _PROVIDER_DISPLAY = {
     "openrouter": "OpenRouter",
     "anthropic": "Anthropic",
     "openai": "OpenAI",
+    "crof": "CrofAI",
     "openai-codex": "OpenAI Codex",
     "copilot": "GitHub Copilot",
     "zai": "Z.AI / GLM",
@@ -570,6 +571,8 @@ _PROVIDER_ALIASES = {
     "moonshot": "kimi-coding",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "crofai": "crof",
+    "crof-ai": "crof",
     "deep-seek": "deepseek",
     "opencode": "opencode-zen",
     "grok": "xai",
@@ -621,6 +624,24 @@ _PROVIDER_MODELS = {
         {"id": "gpt-5.5-mini", "label": "GPT-5.5 Mini"},
         {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini"},
         {"id": "gpt-5.4",      "label": "GPT-5.4"},
+    ],
+    "crof": [
+        {"id": "kimi-k2.6-precision", "label": "Kimi K2.6 Precision"},
+        {"id": "kimi-k2.6", "label": "Kimi K2.6"},
+        {"id": "kimi-k2.5", "label": "Kimi K2.5"},
+        {"id": "kimi-k2.5-lightning", "label": "Kimi K2.5 Lightning"},
+        {"id": "glm-5.1", "label": "GLM-5.1"},
+        {"id": "glm-5.1-precision", "label": "GLM-5.1 Precision"},
+        {"id": "glm-5", "label": "GLM-5"},
+        {"id": "glm-4.7", "label": "GLM-4.7"},
+        {"id": "glm-4.7-flash", "label": "GLM-4.7 Flash"},
+        {"id": "gemma-4-31b-it", "label": "Gemma 4 31B IT"},
+        {"id": "minimax-m2.5", "label": "MiniMax M2.5"},
+        {"id": "qwen3.5-397b-a17b", "label": "Qwen3.5 397B A17B"},
+        {"id": "qwen3.5-9b", "label": "Qwen3.5 9B"},
+        {"id": "qwen3.5-9b-chat", "label": "Qwen3.5 9B Chat"},
+        {"id": "deepseek-v3.2", "label": "DeepSeek V3.2"},
+        {"id": "greg", "label": "Greg"},
     ],
     "openai-codex": [
         {"id": "gpt-5.5", "label": "GPT-5.5"},
@@ -758,6 +779,11 @@ _PROVIDER_MODELS = {
 }
 
 
+_OPENAI_COMPAT_PROVIDER_BASE_URLS = {
+    "crof": "https://crof.ai/v1",
+}
+
+
 _AMBIENT_GH_CLI_MARKERS = frozenset({"gh_cli", "gh auth token"})
 
 
@@ -873,6 +899,10 @@ def resolve_model_provider(model_id: str) -> tuple:
     # resolve credentials in streaming.py).
     if model_id.startswith("@") and ":" in model_id:
         provider_hint, bare_model = model_id[1:].split(":", 1)
+        provider_hint = _resolve_provider_alias(provider_hint)
+        compat_base_url = _OPENAI_COMPAT_PROVIDER_BASE_URLS.get(provider_hint)
+        if compat_base_url:
+            return bare_model, "custom", compat_base_url
         return bare_model, provider_hint, None
 
     if "/" in model_id:
@@ -910,7 +940,14 @@ def resolve_model_provider(model_id: str) -> tuple:
         # from the OpenRouter dropdown (e.g. config=anthropic but picked openai/gpt-5.4-mini).
         # In this case always route through openrouter with the full provider/model string.
         if prefix in _PROVIDER_MODELS and prefix != config_provider:
+            compat_base_url = _OPENAI_COMPAT_PROVIDER_BASE_URLS.get(prefix)
+            if compat_base_url:
+                return bare, "custom", compat_base_url
             return model_id, "openrouter", None
+
+    compat_base_url = _OPENAI_COMPAT_PROVIDER_BASE_URLS.get(str(config_provider or ""))
+    if compat_base_url:
+        return model_id, "custom", compat_base_url
 
     return model_id, config_provider, config_base_url
 

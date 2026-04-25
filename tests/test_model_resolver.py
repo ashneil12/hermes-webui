@@ -133,6 +133,16 @@ def test_provider_hint_deepseek():
     assert provider == 'deepseek'
 
 
+def test_provider_hint_crof_routes_to_openai_compatible_endpoint():
+    """@crof:model routes through the custom OpenAI-compatible CrofAI endpoint."""
+    model, provider, base_url = _resolve_with_config(
+        '@crof:kimi-k2.5-lightning', provider='openai-codex',
+    )
+    assert model == 'kimi-k2.5-lightning'
+    assert provider == 'custom'
+    assert base_url == 'https://crof.ai/v1'
+
+
 def test_slash_prefix_non_default_still_routes_openrouter():
     """minimax/MiniMax-M2.7 (old format) still routes through openrouter."""
     model, provider, base_url = _resolve_with_config(
