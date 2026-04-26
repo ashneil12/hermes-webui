@@ -522,6 +522,10 @@ _PROVIDER_DISPLAY = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
     "crof": "CrofAI",
+    "venice": "Venice AI",
+    "bankr": "Bankr",
+    "cometapi": "CometAPI",
+    "groq": "Groq",
     "openai-codex": "OpenAI Codex",
     "copilot": "GitHub Copilot",
     "zai": "Z.AI / GLM",
@@ -539,6 +543,7 @@ _PROVIDER_DISPLAY = {
     "lmstudio": "LM Studio",
     "mistralai": "Mistral",
     "qwen": "Qwen",
+    "xiaomi": "Xiaomi MiMo",
     "x-ai": "xAI",
 }
 
@@ -642,6 +647,86 @@ _PROVIDER_MODELS = {
         {"id": "qwen3.5-9b-chat", "label": "Qwen3.5 9B Chat"},
         {"id": "deepseek-v3.2", "label": "DeepSeek V3.2"},
         {"id": "greg", "label": "Greg"},
+    ],
+    "venice": [
+        {"id": "claude-opus-4-7", "label": "Claude Opus 4.7 (via Venice)"},
+        {"id": "claude-opus-4-6", "label": "Claude Opus 4.6 (via Venice)"},
+        {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (via Venice)"},
+        {"id": "kimi-k2-6", "label": "Kimi K2.6 (via Venice)"},
+        {"id": "kimi-k2-5", "label": "Kimi K2.5 (via Venice)"},
+        {"id": "zai-org-glm-5", "label": "GLM-5 (via Venice)"},
+        {"id": "zai-org-glm-5-1", "label": "GLM-5.1 (via Venice)"},
+        {"id": "z-ai-glm-5v-turbo", "label": "GLM-5V Turbo (via Venice)"},
+        {"id": "grok-4-20", "label": "Grok 4.20 (via Venice)"},
+        {"id": "grok-41-fast", "label": "Grok 4.1 Fast (via Venice)"},
+        {"id": "qwen-3-6-plus", "label": "Qwen 3.6 Plus (via Venice)"},
+        {"id": "qwen3-vl-235b-a22b", "label": "Qwen3 VL 235B (via Venice)"},
+        {"id": "qwen3-coder-480b-a35b-instruct-turbo", "label": "Qwen3 Coder 480B Turbo (via Venice)"},
+        {"id": "openai-gpt-55", "label": "GPT-5.5 (via Venice)"},
+        {"id": "openai-gpt-54-pro", "label": "GPT-5.4 Pro (via Venice)"},
+        {"id": "openai-gpt-54", "label": "GPT-5.4 (via Venice)"},
+        {"id": "openai-gpt-54-mini", "label": "GPT-5.4 Mini (via Venice)"},
+        {"id": "google-gemma-4-26b-a4b-it", "label": "Gemma 4 26B (via Venice)"},
+        {"id": "google-gemma-4-31b-it", "label": "Gemma 4 31B (via Venice)"},
+        {"id": "gemini-3-1-pro-preview", "label": "Gemini 3.1 Pro (via Venice)"},
+        {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash (via Venice)"},
+        {"id": "z-ai-glm-5-turbo", "label": "GLM-5 Turbo (via Venice)"},
+        {"id": "kimi-k2-thinking", "label": "Kimi K2 Thinking (via Venice)"},
+        {"id": "arcee-trinity-large-thinking", "label": "Trinity Large Thinking (via Venice)"},
+        {"id": "minimax-m27", "label": "MiniMax M2.7 (via Venice)"},
+        {"id": "minimax-m25", "label": "MiniMax M2.5 (via Venice)"},
+        {"id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro (via Venice)"},
+        {"id": "deepseek-v4-flash", "label": "DeepSeek V4 Flash (via Venice)"},
+        {"id": "deepseek-v3.2", "label": "DeepSeek V3.2 (via Venice)"},
+        {"id": "zai-org-glm-4.7-flash", "label": "GLM-4.7 Flash (via Venice)"},
+        {"id": "venice-uncensored", "label": "Venice Uncensored"},
+        {"id": "venice-uncensored-role-play", "label": "Venice Uncensored Role-Play"},
+        {"id": "e2ee-glm-5", "label": "GLM-5 E2EE (via Venice)"},
+        {"id": "e2ee-gpt-oss-120b-p", "label": "GPT OSS 120B E2EE (via Venice)"},
+    ],
+    "bankr": [
+        {"id": "claude-opus-4.7", "label": "Claude Opus 4.7"},
+        {"id": "claude-opus-4.6", "label": "Claude Opus 4.6"},
+        {"id": "claude-sonnet-4.6", "label": "Claude Sonnet 4.6"},
+        {"id": "claude-haiku-4.5", "label": "Claude Haiku 4.5"},
+        {"id": "gemini-3.1-pro", "label": "Gemini 3.1 Pro"},
+        {"id": "gemini-3-flash", "label": "Gemini 3 Flash"},
+        {"id": "gemma-4-31b-it", "label": "Gemma 4 31B"},
+        {"id": "gpt-5.4", "label": "GPT-5.4"},
+        {"id": "gpt-5.2-codex", "label": "GPT-5.2 Codex"},
+        {"id": "grok-4.20", "label": "Grok 4.20"},
+        {"id": "glm-5.1", "label": "GLM-5.1"},
+        {"id": "deepseek-v3.2", "label": "DeepSeek V3.2"},
+        {"id": "minimax-m2.7", "label": "MiniMax M2.7"},
+        {"id": "kimi-k2.6", "label": "Kimi K2.6"},
+        {"id": "qwen3-coder", "label": "Qwen3 Coder"},
+        {"id": "qwen3.5-plus", "label": "Qwen3.5 Plus"},
+    ],
+    "cometapi": [
+        {"id": "gpt-5.5-all", "label": "GPT-5.5 All"},
+        {"id": "gpt-5.5-medium-all", "label": "GPT-5.5 Medium All"},
+        {"id": "gpt-5.5-high-all", "label": "GPT-5.5 High All"},
+        {"id": "gpt-5.5-xhigh-all", "label": "GPT-5.5 XHigh All"},
+        {"id": "gpt-5.5-low-all", "label": "GPT-5.5 Low All"},
+        {"id": "claude-opus-4-6", "label": "Claude Opus 4.6"},
+        {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6"},
+        {"id": "gpt-5.4-pro", "label": "GPT-5.4 Pro"},
+        {"id": "gpt-5.4", "label": "GPT-5.4"},
+        {"id": "gpt-5.4-nano", "label": "GPT-5.4 Nano"},
+        {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro"},
+        {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash"},
+        {"id": "qwen3-max-2026-01-23", "label": "Qwen3 Max"},
+        {"id": "kimi-k2.5", "label": "Kimi K2.5"},
+        {"id": "glm-5", "label": "GLM-5"},
+        {"id": "minimax-m2.5", "label": "MiniMax M2.5"},
+    ],
+    "groq": [
+        {"id": "openai/gpt-oss-120b", "label": "GPT OSS 120B (via Groq)"},
+        {"id": "openai/gpt-oss-20b", "label": "GPT OSS 20B (via Groq)"},
+        {"id": "llama-3.3-70b-versatile", "label": "Llama 3.3 70B"},
+        {"id": "llama-3.1-8b-instant", "label": "Llama 3.1 8B"},
+        {"id": "qwen/qwen3-32b", "label": "Qwen3 32B"},
+        {"id": "whisper-large-v3", "label": "Whisper Large V3"},
     ],
     "openai-codex": [
         {"id": "gpt-5.5", "label": "GPT-5.5"},
@@ -772,6 +857,20 @@ _PROVIDER_MODELS = {
         {"id": "qwen3-coder",   "label": "Qwen3 Coder"},
         {"id": "qwen3.6-plus",  "label": "Qwen3.6 Plus"},
     ],
+    "alibaba": [
+        {"id": "qwen3.6-max-preview", "label": "Qwen 3.6 Max Preview"},
+        {"id": "qwen3.6-plus", "label": "Qwen 3.6 Plus"},
+        {"id": "qwen3.6-flash", "label": "Qwen 3.6 Flash"},
+        {"id": "qwen3.6-35b-a3b", "label": "Qwen 3.6 35B A3B"},
+        {"id": "qwen3.5-plus", "label": "Qwen 3.5 Plus"},
+        {"id": "qwen3-max-2026-01-23", "label": "Qwen3 Max"},
+        {"id": "qwen3-coder-next", "label": "Qwen3 Coder Next"},
+    ],
+    "xiaomi": [
+        {"id": "mimo-v2-pro", "label": "MiMo V2 Pro"},
+        {"id": "mimo-v2-flash", "label": "MiMo V2 Flash"},
+        {"id": "mimo-v2-omni", "label": "MiMo V2 Omni"},
+    ],
     # xAI — prefix used in OpenRouter model IDs (x-ai/grok-4-20)
     "x-ai": [
         {"id": "grok-4.20", "label": "Grok 4.20"},
@@ -781,6 +880,10 @@ _PROVIDER_MODELS = {
 
 _OPENAI_COMPAT_PROVIDER_BASE_URLS = {
     "crof": "https://crof.ai/v1",
+    "venice": "https://api.venice.ai/api/v1",
+    "bankr": "https://llm.bankr.bot/v1",
+    "cometapi": "https://api.cometapi.com/v1",
+    "groq": "https://api.groq.com/openai/v1",
 }
 
 
@@ -1452,6 +1555,10 @@ def get_available_models() -> dict:
                 "MINIMAX_CN_API_KEY",
                 "XAI_API_KEY",
                 "MISTRAL_API_KEY",
+                # Gateway providers (preserved from ash fork b896db2)
+                "DASHSCOPE_API_KEY",
+                "XIAOMI_API_KEY",
+                "GROQ_API_KEY",
             ):
                 val = os.getenv(k)
                 if val:
@@ -1487,6 +1594,13 @@ def get_available_models() -> dict:
                 detected_providers.add("opencode-zen")
             if all_env.get("OPENCODE_GO_API_KEY"):
                 detected_providers.add("opencode-go")
+            # Gateway providers (preserved from ash fork b896db2)
+            if all_env.get("DASHSCOPE_API_KEY"):
+                detected_providers.add("alibaba")
+            if all_env.get("XIAOMI_API_KEY"):
+                detected_providers.add("xiaomi")
+            if all_env.get("GROQ_API_KEY"):
+                detected_providers.add("groq")
 
         # Also detect providers explicitly listed in config.yaml providers section.
         # A user may configure a provider key via config.yaml providers.<name>.api_key

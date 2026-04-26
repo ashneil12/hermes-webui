@@ -36,6 +36,11 @@ _OPENAI_COMPAT_ENDPOINTS = {
     "deepseek": "https://api.deepseek.com/v1",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
     "crof": "https://crof.ai/v1",
+    "venice": "https://api.venice.ai/api/v1",
+    "bankr": "https://llm.bankr.bot/v1",
+    "cometapi": "https://api.cometapi.com/v1",
+    "groq": "https://api.groq.com/openai/v1",
+    "xiaomi": "https://platform.xiaomimimo.com/v1",
 }
 # NOTE: "openai-codex" is excluded because it maps to the same endpoint as
 # the base "openai" provider (api.openai.com/v1).  When both are configured
