@@ -228,6 +228,13 @@ rm -f $it || error_exit "Failed to delete test file in /app"
 
 echo ""; echo "== Checking required environment variables for hermes-webui"
 
+if [ -z "${HERMES_HOME+x}" ]; then export HERMES_HOME="/home/hermeswebui/.hermes"; fi
+echo "-- HERMES_HOME: $HERMES_HOME"
+if [ ! -d "$HERMES_HOME" ]; then mkdir -p "$HERMES_HOME" || error_exit "Failed to create Hermes home at $HERMES_HOME"; fi
+if [ ! -d "$HERMES_HOME" ]; then error_exit "HERMES_HOME directory does not exist at $HERMES_HOME"; fi
+it="$HERMES_HOME/.testfile"; touch $it || error_exit "Failed to verify Hermes home at $HERMES_HOME"
+rm -f $it || error_exit "Failed to delete test file in $HERMES_HOME"
+
 echo ""; echo "-- HERMES_WEBUI_VERSION: Where to store sessions, workspaces, and other state (default: ~/.hermes/webui-mvp)"
 if [ -z "${HERMES_WEBUI_STATE_DIR+x}" ]; then error_exit "HERMES_WEBUI_STATE_DIR not set"; fi; 
 echo "-- HERMES_WEBUI_STATE_DIR: $HERMES_WEBUI_STATE_DIR"
@@ -235,6 +242,26 @@ if [ ! -d "$HERMES_WEBUI_STATE_DIR" ]; then mkdir -p $HERMES_WEBUI_STATE_DIR || 
 if [ ! -d "$HERMES_WEBUI_STATE_DIR" ]; then error_exit "HERMES_WEBUI_STATE_DIR directory does not exist at $HERMES_WEBUI_STATE_DIR"; fi
 it="$HERMES_WEBUI_STATE_DIR/.testfile"; touch $it || error_exit "Failed to verify state directory at $HERMES_WEBUI_STATE_DIR"
 rm -f $it || error_exit "Failed to delete test file in $HERMES_WEBUI_STATE_DIR"
+
+echo ""; echo "-- GH_CONFIG_DIR: Persistent GitHub CLI config directory"
+if [ -z "${GH_CONFIG_DIR+x}" ]; then export GH_CONFIG_DIR="$HERMES_HOME/gh"; fi
+echo "-- GH_CONFIG_DIR: $GH_CONFIG_DIR"
+if [ ! -d "$GH_CONFIG_DIR" ]; then mkdir -p "$GH_CONFIG_DIR" || error_exit "Failed to create GitHub CLI config directory at $GH_CONFIG_DIR"; fi
+if [ ! -d "$GH_CONFIG_DIR" ]; then error_exit "GH_CONFIG_DIR directory does not exist at $GH_CONFIG_DIR"; fi
+it="$GH_CONFIG_DIR/.testfile"; touch $it || error_exit "Failed to verify GitHub CLI config directory at $GH_CONFIG_DIR"
+rm -f $it || error_exit "Failed to delete test file in $GH_CONFIG_DIR"
+
+echo ""; echo "-- Persistent user bin directory"
+if [ ! -d "$HERMES_HOME/bin" ]; then mkdir -p "$HERMES_HOME/bin" || error_exit "Failed to create persistent bin directory at $HERMES_HOME/bin"; fi
+if [ ! -d "$HERMES_HOME/bin" ]; then error_exit "Persistent bin directory does not exist at $HERMES_HOME/bin"; fi
+
+echo ""; echo "-- XDG_CONFIG_HOME: Persistent CLI config directory"
+if [ -z "${XDG_CONFIG_HOME+x}" ]; then export XDG_CONFIG_HOME="$HERMES_HOME/.config"; fi
+echo "-- XDG_CONFIG_HOME: $XDG_CONFIG_HOME"
+if [ ! -d "$XDG_CONFIG_HOME" ]; then mkdir -p "$XDG_CONFIG_HOME" || error_exit "Failed to create persistent config directory at $XDG_CONFIG_HOME"; fi
+if [ ! -d "$XDG_CONFIG_HOME" ]; then error_exit "XDG_CONFIG_HOME directory does not exist at $XDG_CONFIG_HOME"; fi
+it="$XDG_CONFIG_HOME/.testfile"; touch $it || error_exit "Failed to verify persistent config directory at $XDG_CONFIG_HOME"
+rm -f $it || error_exit "Failed to delete test file in $XDG_CONFIG_HOME"
 
 echo ""; echo "-- HERMES_WEBUI_DEFAULT_WORKSPACE: Default workspace directory shown on first launch"
 if [ -z "${HERMES_WEBUI_DEFAULT_WORKSPACE+x}" ]; then echo "HERMES_WEBUI_DEFAULT_WORKSPACE not set, setting to /workspace"; export HERMES_WEBUI_DEFAULT_WORKSPACE="/workspace"; fi;
@@ -257,7 +284,7 @@ fi
 echo ""; echo "==================="
 echo ""; echo "== Installing uv and creating a new virtual environment for hermes-webui"
 
-export PATH="/home/hermeswebui/.local/bin/:$PATH"
+export PATH="$HERMES_HOME/bin:/home/hermeswebui/.local/bin/:$PATH"
 if command -v uv &>/dev/null; then
   echo "-- uv already installed ($(uv --version)), skipping download"
 else

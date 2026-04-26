@@ -23,6 +23,7 @@ RUN apt-get update -y --fix-missing --no-install-recommends \
     ca-certificates \
     sudo \
     curl \
+    gh \
     rsync \
     openssh-client \
     && apt-get upgrade -y \
@@ -89,8 +90,11 @@ RUN echo "__version__ = '${HERMES_VERSION}'" > /apptoo/api/_version.py
 # Default to binding all interfaces (required for container networking)
 ENV HERMES_WEBUI_HOST=0.0.0.0
 ENV HERMES_WEBUI_PORT=8787
+ENV HERMES_HOME=/home/hermeswebui/.hermes
+ENV GH_CONFIG_DIR=/home/hermeswebui/.hermes/gh
+ENV XDG_CONFIG_HOME=/home/hermeswebui/.hermes/.config
+ENV PATH=/home/hermeswebui/.hermes/bin:/home/hermeswebui/.local/bin:${PATH}
 
 EXPOSE 8787
 
 CMD ["/hermeswebui_init.bash"]
-
