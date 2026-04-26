@@ -660,7 +660,9 @@ def test_ui_js_keeps_reasoning_only_assistant_messages_visible(cleanup_test_sess
     src = (REPO_ROOT / "static" / "ui.js").read_text()
     assert "function _messageHasReasoningPayload(m)" in src, \
         "ui.js must detect reasoning-only assistant messages"
-    assert "hasTc||hasTu||_messageHasReasoningPayload(m)" in src.replace(' ', ''), \
+    assert "function _assistantHasVisibleTranscriptPayload(m)" in src, \
+        "ui.js must separate visible transcript payload from hidden tool-call plumbing"
+    assert "msgContent(m)||m.attachments?.length||_messageHasReasoningPayload(m)" in src.replace(' ', ''), \
         "renderMessages visibility filter must preserve reasoning-only assistant messages"
 
 
