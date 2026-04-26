@@ -130,6 +130,32 @@ class TestGetProviders:
             config.cfg.update(old_cfg)
             config._cfg_mtime = old_mtime
 
+    def test_openai_compatible_gateway_providers_are_configurable(self, monkeypatch, tmp_path):
+        """Dashboard gateway providers should be first-class configurable WebUI providers."""
+        _install_fake_hermes_cli(monkeypatch)
+        monkeypatch.setattr(profiles, "get_active_hermes_home", lambda: tmp_path)
+
+        old_cfg = dict(config.cfg)
+        old_mtime = config._cfg_mtime
+        config.cfg.clear()
+        config.cfg["model"] = {}
+        try:
+            config._cfg_mtime = config.Path(config._get_config_path()).stat().st_mtime
+        except Exception:
+            config._cfg_mtime = 0.0
+
+        from api.providers import get_providers
+        try:
+            result = get_providers()
+            providers = {p["id"]: p for p in result["providers"]}
+            for provider_id in ("venice", "bankr", "cometapi", "groq"):
+                assert providers[provider_id]["configurable"] is True
+                assert providers[provider_id]["models"]
+        finally:
+            config.cfg.clear()
+            config.cfg.update(old_cfg)
+            config._cfg_mtime = old_mtime
+
     def test_provider_entries_have_required_fields(self, monkeypatch, tmp_path):
         """Each provider entry should have id, display_name, has_key, configurable."""
         _install_fake_hermes_cli(monkeypatch)
@@ -251,6 +277,36 @@ class TestSetProviderKey:
             assert env_path.exists()
             content = env_path.read_text()
             assert "OPENAI_API_KEY=nahcrof_test_key_12345678" in content
+        finally:
+            config.cfg.clear()
+            config.cfg.update(old_cfg)
+            config._cfg_mtime = old_mtime
+
+    def test_set_venice_key_writes_openai_compatible_env(self, monkeypatch, tmp_path):
+        """Venice uses the OpenAI-compatible API key env var for the runtime."""
+        _install_fake_hermes_cli(monkeypatch)
+        monkeypatch.setattr(profiles, "get_active_hermes_home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        old_cfg = dict(config.cfg)
+        old_mtime = config._cfg_mtime
+        config.cfg.clear()
+        config.cfg["model"] = {}
+        try:
+            config._cfg_mtime = config.Path(config._get_config_path()).stat().st_mtime
+        except Exception:
+            config._cfg_mtime = 0.0
+
+        from api.providers import set_provider_key
+        try:
+            result = set_provider_key("venice", "venice_test_key_12345678")
+            assert result["ok"] is True
+            assert result["provider"] == "venice"
+
+            env_path = tmp_path / ".env"
+            assert env_path.exists()
+            content = env_path.read_text()
+            assert "OPENAI_API_KEY=venice_test_key_12345678" in content
         finally:
             config.cfg.clear()
             config.cfg.update(old_cfg)

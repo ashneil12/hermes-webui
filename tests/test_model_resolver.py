@@ -143,6 +143,29 @@ def test_provider_hint_crof_routes_to_openai_compatible_endpoint():
     assert base_url == 'https://crof.ai/v1'
 
 
+@pytest.mark.parametrize(
+    ("provider_hint", "model_id", "expected_base_url"),
+    [
+        ("venice", "deepseek-v4-pro", "https://api.venice.ai/api/v1"),
+        ("bankr", "claude-opus-4.7", "https://llm.bankr.bot/v1"),
+        ("cometapi", "gpt-5.5-all", "https://api.cometapi.com/v1"),
+        ("groq", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1"),
+    ],
+)
+def test_gateway_provider_hints_route_to_openai_compatible_endpoints(
+    provider_hint,
+    model_id,
+    expected_base_url,
+):
+    """First-class gateway providers still route through custom OpenAI-compatible endpoints."""
+    model, provider, base_url = _resolve_with_config(
+        f"@{provider_hint}:{model_id}", provider="custom",
+    )
+    assert model == model_id
+    assert provider == "custom"
+    assert base_url == expected_base_url
+
+
 def test_slash_prefix_non_default_still_routes_openrouter():
     """minimax/MiniMax-M2.7 (old format) still routes through openrouter."""
     model, provider, base_url = _resolve_with_config(
@@ -375,7 +398,7 @@ def test_unknown_providers_do_not_inherit_default_model(monkeypatch):
     """Detected providers without their own model catalog must not be filled
     with the global default_model placeholder.
 
-    Regression guard for the bug where Alibaba / Minimax-Cn ended up showing
+    Regression guard for the bug where unknown providers ended up showing
     gpt-5.4-mini even though those providers do not serve it.
     """
     import sys, types
@@ -383,7 +406,7 @@ def test_unknown_providers_do_not_inherit_default_model(monkeypatch):
     fake_mod = types.ModuleType('hermes_cli.models')
     fake_mod.list_available_providers = lambda: [
         {'id': 'openai-codex', 'authenticated': True},
-        {'id': 'alibaba',      'authenticated': True},
+        {'id': 'acme-ai',      'authenticated': True},
         {'id': 'minimax-cn',   'authenticated': True},
     ]
     fake_auth = types.ModuleType('hermes_cli.auth')
@@ -399,8 +422,8 @@ def test_unknown_providers_do_not_inherit_default_model(monkeypatch):
     groups = {g['provider']: [m['id'] for m in g['models']] for g in result['groups']}
     norm = lambda mid: mid.split('/', 1)[-1].split(':', 1)[-1]
 
-    assert 'Alibaba' not in groups, (
-        f"Alibaba should not inherit the default model placeholder: {groups}"
+    assert 'Acme-Ai' not in groups, (
+        f"Unknown providers should not inherit the default model placeholder: {groups}"
     )
     assert 'Minimax-Cn' not in groups, (
         f"Minimax-Cn should not inherit the default model placeholder: {groups}"
