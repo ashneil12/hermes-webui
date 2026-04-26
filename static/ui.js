@@ -1483,6 +1483,16 @@ function _messageHasReasoningPayload(m){
   if(Array.isArray(m.content)) return m.content.some(p=>p&&(p.type==='thinking'||p.type==='reasoning'));
   return /<think>[\s\S]*?<\/think>|<\|channel>thought\n[\s\S]*?<channel\|>|<\|turn\|>thinking\n[\s\S]*?<turn\|>/.test(String(m.content||''));
 }
+function _messageHasToolCallPayload(m){
+  if(!m||m.role!=='assistant') return false;
+  const hasTc=Array.isArray(m.tool_calls)&&m.tool_calls.length>0;
+  const hasTu=Array.isArray(m.content)&&m.content.some(p=>p&&p.type==='tool_use');
+  return hasTc||hasTu;
+}
+function _assistantHasVisibleTranscriptPayload(m){
+  if(!m||m.role!=='assistant') return false;
+  return !!(msgContent(m)||m.attachments?.length||_messageHasReasoningPayload(m));
+}
 function _assistantRoleHtml(tsTitle=''){
   const _bn=window._botName||'Hermes';
   return `<div class="msg-role assistant" ${tsTitle?`title="${esc(tsTitle)}"`:''}><div class="role-icon assistant">${esc(_bn.charAt(0).toUpperCase())}</div><span style="font-size:12px">${esc(_bn)}</span></div>`;
@@ -1749,9 +1759,9 @@ function renderMessages(){
   const vis=S.messages.filter(m=>{
     if(!m||!m.role||m.role==='tool')return false;
     if(m.role==='assistant'){
-      const hasTc=Array.isArray(m.tool_calls)&&m.tool_calls.length>0;
-      const hasTu=Array.isArray(m.content)&&m.content.some(p=>p&&p.type==='tool_use');
-      if(hasTc||hasTu||_messageHasReasoningPayload(m)) return true;
+      if(_assistantHasVisibleTranscriptPayload(m)) return true;
+      if(_messageHasToolCallPayload(m)) return false;
+      return false;
     }
     return msgContent(m)||m.attachments?.length;
   });
@@ -1767,9 +1777,11 @@ function renderMessages(){
   let rawIdx=0;
   for(const m of S.messages){
     if(!m||!m.role||m.role==='tool'){rawIdx++;continue;}
-    const hasTc=Array.isArray(m.tool_calls)&&m.tool_calls.length>0;
-    const hasTu=Array.isArray(m.content)&&m.content.some(p=>p&&p.type==='tool_use');
-    if(msgContent(m)||m.attachments?.length||(m.role==='assistant'&&(hasTc||hasTu||_messageHasReasoningPayload(m)))) visWithIdx.push({m,rawIdx});
+    if(m.role==='assistant'){
+      if(_assistantHasVisibleTranscriptPayload(m)) visWithIdx.push({m,rawIdx});
+    }else if(msgContent(m)||m.attachments?.length){
+      visWithIdx.push({m,rawIdx});
+    }
     rawIdx++;
   }
   let lastUserRawIdx=-1;

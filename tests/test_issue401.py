@@ -35,10 +35,12 @@ def test_loadsession_uses_session_toolcalls_only_as_fallback():
     assert "S.toolCalls=[];" in SESSIONS_JS
 
 
-def test_rendermessages_treats_openai_toolcall_assistants_as_visible():
-    """OpenAI assistant rows with empty content but tool_calls must stay anchorable."""
+def test_rendermessages_hides_empty_toolcall_assistants_from_transcript():
+    """Empty tool-call assistant rows stay in raw history but do not draw blank turns."""
     assert "const hasTc=Array.isArray(m.tool_calls)&&m.tool_calls.length>0;" in UI_JS
-    assert "if(hasTc||hasTu||_messageHasReasoningPayload(m)) return true;" in UI_JS
+    assert "function _assistantHasVisibleTranscriptPayload(m)" in UI_JS
+    assert "if(_assistantHasVisibleTranscriptPayload(m)) visWithIdx.push({m,rawIdx});" in UI_JS
+    assert "hasTc||hasTu||_messageHasReasoningPayload(m)" not in UI_JS.replace(" ", "")
 
 
 def _run_js(script_body: str) -> dict:
@@ -90,6 +92,55 @@ def test_reload_keeps_empty_assistant_toolcall_anchor():
     assert result["fallback_len"] == 0
     assert result["assistant_tool_idx"] == 1
     assert result["tool_idx"] == 2
+
+
+def test_visible_transcript_excludes_empty_toolcall_anchor():
+    """The UI should not show a blank assistant row for tool-call-only messages."""
+    result = _run_js("""
+        function msgContent(m){
+            let c=m.content||'';
+            if(Array.isArray(c)) c=c.filter(p=>p&&p.type==='text').map(p=>p.text||'').join('').trim();
+            return String(c).trim();
+        }
+        function _messageHasReasoningPayload(m){
+            if(!m||m.role!=='assistant') return false;
+            if(m.reasoning) return true;
+            if(Array.isArray(m.content)) return m.content.some(p=>p&&(p.type==='thinking'||p.type==='reasoning'));
+            return /<think>[\\s\\S]*?<\\/think>/.test(String(m.content||''));
+        }
+        function _assistantHasVisibleTranscriptPayload(m){
+            if(!m||m.role!=='assistant') return false;
+            return !!(msgContent(m)||m.attachments?.length||_messageHasReasoningPayload(m));
+        }
+        function visible(messages){
+            const out=[];
+            let rawIdx=0;
+            for(const m of messages){
+                if(!m||!m.role||m.role==='tool'){rawIdx++;continue;}
+                if(m.role==='assistant'){
+                    if(_assistantHasVisibleTranscriptPayload(m)) out.push({role:m.role, rawIdx});
+                }else if(msgContent(m)||m.attachments?.length){
+                    out.push({role:m.role, rawIdx});
+                }
+                rawIdx++;
+            }
+            return out;
+        }
+        const messages = [
+            { role: 'user', content: 'search sessions' },
+            { role: 'assistant', content: '', tool_calls: [{ id: 'call-1' }] },
+            { role: 'tool', tool_call_id: 'call-1', content: '{"output":"ok"}' },
+            { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu-1', name: 'session_search' }] },
+            { role: 'assistant', content: [{ type: 'reasoning', text: 'Checking memory.' }] },
+            { role: 'assistant', content: 'Found 17 sessions.' }
+        ];
+        process.stdout.write(JSON.stringify({ visible: visible(messages) }));
+    """)
+    assert result["visible"] == [
+        {"role": "user", "rawIdx": 0},
+        {"role": "assistant", "rawIdx": 4},
+        {"role": "assistant", "rawIdx": 5},
+    ]
 
 
 def test_reload_uses_session_summary_when_messages_have_no_tool_metadata():
