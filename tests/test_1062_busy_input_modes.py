@@ -176,6 +176,74 @@ class TestSendBusyBranchDispatch:
         )
 
 
+    def test_slash_commands_intercepted_before_busymode_routing(self):
+        """The three busy-control slash commands (/steer /interrupt /queue) must be
+        intercepted at the TOP of the busy block — before the busyMode routing — so
+        they execute immediately while the agent is running.
+
+        Without this intercept, typing /steer while busy queues the text as a plain
+        message.  When it drains after the turn ends there is no active stream, so
+        cmdSteer says "No active task to stop." and the steer is lost entirely.
+        """
+        send_idx = MESSAGES_JS.find("async function send(")
+        assert send_idx >= 0, "send() not found"
+        # Look in the first 500 chars of the busy block for the intercept
+        busy_start = MESSAGES_JS.find("S.busy||compressionRunning", send_idx)
+        assert busy_start >= 0, "busy block not found"
+        # The intercept must appear BEFORE the busyMode assignment
+        intercept_idx = MESSAGES_JS.find("'steer','interrupt','queue'", busy_start)
+        busymode_idx = MESSAGES_JS.find("_busyInputMode||'queue'", busy_start)
+        assert intercept_idx >= 0, (
+            "send() must intercept /steer /interrupt /queue before the busyMode "
+            "routing block — otherwise they queue instead of executing immediately"
+        )
+        assert intercept_idx < busymode_idx, (
+            "The slash-command intercept must come BEFORE the busyMode routing "
+            "so /steer executes while the agent is running, not after the turn ends"
+        )
+
+    def test_steer_intercept_calls_handler_directly(self):
+        """The busy-intercept must dispatch via _bc.fn(_pc.args), not queue the text."""
+        send_idx = MESSAGES_JS.find("async function send(")
+        busy_start = MESSAGES_JS.find("S.busy||compressionRunning", send_idx)
+        intercept_idx = MESSAGES_JS.find("'steer','interrupt','queue'", busy_start)
+        assert intercept_idx >= 0
+        # Get the intercept block (up to the next busyMode assignment)
+        busymode_idx = MESSAGES_JS.find("_busyInputMode||'queue'", busy_start)
+        intercept_block = MESSAGES_JS[intercept_idx:busymode_idx]
+        assert "_bc.fn(_pc.args)" in intercept_block, (
+            "The intercept must call the command handler directly via _bc.fn(_pc.args)"
+        )
+        assert "return;" in intercept_block, (
+            "The intercept must return after dispatching so send() does not also queue"
+        )
+
+    def test_steer_intercept_clears_input_before_await(self):
+        """The intercept must clear $('msg').value BEFORE awaiting the handler.
+
+        Without the sync clear, the input field still shows '/steer foo' after
+        the steer fires. If the user presses Enter again (a common reflex while
+        waiting for the toast), send() re-runs and either re-fires the command
+        or — once the turn ended — drops a confusing 'No active task to stop.'
+        """
+        send_idx = MESSAGES_JS.find("async function send(")
+        busy_start = MESSAGES_JS.find("S.busy||compressionRunning", send_idx)
+        intercept_idx = MESSAGES_JS.find("'steer','interrupt','queue'", busy_start)
+        busymode_idx = MESSAGES_JS.find("_busyInputMode||'queue'", busy_start)
+        intercept_block = MESSAGES_JS[intercept_idx:busymode_idx]
+        clear_idx = intercept_block.find("$('msg').value=''")
+        await_idx = intercept_block.find("await _bc.fn")
+        assert clear_idx >= 0, (
+            "The intercept must clear $('msg').value (so the field doesn't keep "
+            "showing /steer foo after the command fires)"
+        )
+        assert await_idx >= 0, "await _bc.fn(...) must be present in the intercept"
+        assert clear_idx < await_idx, (
+            "$('msg').value='' must be cleared BEFORE awaiting the handler — "
+            "otherwise a reflexive Enter press during the await re-fires the command"
+        )
+
+
 # ── Boot init + settings panel wiring ───────────────────────────────────
 
 class TestBootAndPanelsWiring:

@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+
+## v0.50.216 — 2026-04-26
+
+### Added
+- **Compression chain collapse** — `get_importable_agent_sessions()` now merges linear compression continuation chains into a single sidebar entry, showing the chain tip's activity time and model. The chain root's title and start time are preserved for display; the latest importable segment is used for import. Non-compression parent/child pairs are unchanged. (`api/agent_sessions.py`, `tests/test_gateway_sync.py`) Closes #1012 [#1012 @franksong2702]
+- **Comprehensive markdown renderer improvements** — blockquote grouping, strikethrough, task lists, CRLF normalisation, nested blockquotes, lists inside blockquotes. See details below. (`static/ui.js`) [#1073]
+
+### Fixed
+- **Blockquote rendering** — consecutive `> lines` now group into one `<blockquote>`, blank `>` continuation lines become `<br>`, bare `>` (no space) handled, `>>` nested blockquotes recurse correctly, lists inside blockquotes render `<ul>`, inline markdown (bold/italic/code) works inside quotes. (`static/ui.js`) [#1073]
+- **Strikethrough** — `~~text~~` now renders as `<del>text</del>` in all contexts (paragraphs, blockquotes, list items). (`static/ui.js`) [#1073]
+- **Task lists** — `- [x]` renders as ✅, `- [ ]` renders as ☐ in all unordered list contexts including inside blockquotes. (`static/ui.js`) [#1073]
+- **CRLF line endings** — Windows `\r\n` line endings are normalised at the start of `renderMd()` so `\r` never appears in rendered text. (`static/ui.js`) [#1073]
+- **HTML/HTM preview in workspace** — `.html` and `.htm` files now render correctly in the workspace preview iframe. Root cause: `MIME_MAP` was missing these extensions; the fallback `application/octet-stream` caused browsers to refuse to render in the iframe. (`api/config.py`) [#1070]
+- **Approval card obscured by queue flyout** — the approval card's "Allow once / Allow session / Always allow / Deny" buttons are no longer hidden behind the queue flyout when both are visible simultaneously. (`static/style.css` — one line: `z-index:3` on `.approval-card.visible`) [#1071]
+- **`/steer`, `/interrupt`, `/queue` not working while agent is busy** — typing these commands while the agent is running now executes them immediately instead of queuing the raw text. Root cause: `send()` returned early inside the busy block before reaching the slash-command dispatcher. Fix: intercept the three control commands at the top of the busy block. (`static/messages.js`) [#1072]
+- **Reasoning chip always visible** — the composer reasoning chip is now shown for all effort states. When effort is unset/default it shows a muted "Default" label; when explicitly set to `none` it shows "None". Previously both states hid the chip entirely, removing the affordance to inspect or change it. (`static/ui.js`, `static/style.css`) Closes #1068 [#1074 @franksong2702]
+- **Steer settings copy updated** — removed "falls back to interrupt" / "interrupt + send" language across all 6 locales; steer mode now correctly described as "mid-turn correction without interrupting". (`static/i18n.js`, `static/index.html`) [#1072]
+
 ## v0.50.215 — 2026-04-26
 
 ### Added
