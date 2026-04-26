@@ -93,7 +93,30 @@ ENV HERMES_WEBUI_PORT=8787
 ENV HERMES_HOME=/home/hermeswebui/.hermes
 ENV GH_CONFIG_DIR=/home/hermeswebui/.hermes/gh
 ENV XDG_CONFIG_HOME=/home/hermeswebui/.hermes/.config
-ENV PATH=/home/hermeswebui/.hermes/bin:/home/hermeswebui/.local/bin:${PATH}
+ENV PYTHONUSERBASE=/home/hermeswebui/.hermes/python
+ENV PIP_CACHE_DIR=/home/hermeswebui/.hermes/cache/pip
+ENV PIPX_HOME=/home/hermeswebui/.hermes/pipx
+ENV PIPX_BIN_DIR=/home/hermeswebui/.hermes/bin
+ENV UV_CACHE_DIR=/home/hermeswebui/.hermes/cache/uv
+ENV UV_TOOL_DIR=/home/hermeswebui/.hermes/uv/tools
+ENV UV_TOOL_BIN_DIR=/home/hermeswebui/.hermes/bin
+ENV NPM_CONFIG_PREFIX=/home/hermeswebui/.hermes/npm
+ENV NPM_CONFIG_CACHE=/home/hermeswebui/.hermes/cache/npm
+ENV PNPM_HOME=/home/hermeswebui/.hermes/pnpm
+ENV YARN_GLOBAL_FOLDER=/home/hermeswebui/.hermes/yarn/global
+ENV YARN_CACHE_FOLDER=/home/hermeswebui/.hermes/cache/yarn
+ENV COREPACK_HOME=/home/hermeswebui/.hermes/corepack
+ENV CARGO_HOME=/home/hermeswebui/.hermes/cargo
+ENV RUSTUP_HOME=/home/hermeswebui/.hermes/rustup
+ENV GOPATH=/home/hermeswebui/.hermes/go
+ENV GOBIN=/home/hermeswebui/.hermes/bin
+ENV BUN_INSTALL=/home/hermeswebui/.hermes/bun
+ENV DENO_INSTALL=/home/hermeswebui/.hermes/deno
+ENV GEM_HOME=/home/hermeswebui/.hermes/gem
+ENV GEM_PATH=/home/hermeswebui/.hermes/gem
+ENV COMPOSER_HOME=/home/hermeswebui/.hermes/composer
+ENV DOTNET_CLI_HOME=/home/hermeswebui/.hermes/dotnet
+ENV PATH=/home/hermeswebui/.hermes/bin:/home/hermeswebui/.hermes/python/bin:/home/hermeswebui/.hermes/npm/bin:/home/hermeswebui/.hermes/pnpm:/home/hermeswebui/.hermes/cargo/bin:/home/hermeswebui/.hermes/go/bin:/home/hermeswebui/.hermes/bun/bin:/home/hermeswebui/.hermes/deno/bin:/home/hermeswebui/.hermes/gem/bin:/home/hermeswebui/.hermes/composer/vendor/bin:/home/hermeswebui/.local/bin:${PATH}
 
 EXPOSE 8787
 
