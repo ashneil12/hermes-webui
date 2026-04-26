@@ -48,6 +48,18 @@ write_worldtmpfile() {
   chmod 777 ${tmpfile}
 }
 
+ensure_persistent_dir() {
+  env_name=$1
+  default_path=$2
+  label=$3
+  if [ -z "${!env_name:-}" ]; then export "$env_name=$default_path"; fi
+  echo "-- ${env_name}: ${!env_name} (${label})"
+  if [ ! -d "${!env_name}" ]; then mkdir -p "${!env_name}" || error_exit "Failed to create ${label} at ${!env_name}"; fi
+  if [ ! -d "${!env_name}" ]; then error_exit "${env_name} directory does not exist at ${!env_name}"; fi
+  it="${!env_name}/.testfile"; touch "$it" || error_exit "Failed to verify ${label} at ${!env_name}"
+  rm -f "$it" || error_exit "Failed to delete test file in ${!env_name}"
+}
+
 itdir=/tmp/hermeswebui_init
 if [ ! -d $itdir ]; then mkdir $itdir; chmod 777 $itdir; fi
 if [ ! -d $itdir ]; then error_exit "Failed to create $itdir"; fi
@@ -263,6 +275,74 @@ if [ ! -d "$XDG_CONFIG_HOME" ]; then error_exit "XDG_CONFIG_HOME directory does 
 it="$XDG_CONFIG_HOME/.testfile"; touch $it || error_exit "Failed to verify persistent config directory at $XDG_CONFIG_HOME"
 rm -f $it || error_exit "Failed to delete test file in $XDG_CONFIG_HOME"
 
+echo ""; echo "-- Persistent installer directories"
+ensure_persistent_dir PYTHONUSERBASE "$HERMES_HOME/python" "Python user install directory"
+ensure_persistent_dir PIP_CACHE_DIR "$HERMES_HOME/cache/pip" "pip cache directory"
+ensure_persistent_dir PIPX_HOME "$HERMES_HOME/pipx" "pipx home directory"
+ensure_persistent_dir PIPX_BIN_DIR "$HERMES_HOME/bin" "pipx bin directory"
+ensure_persistent_dir UV_CACHE_DIR "$HERMES_HOME/cache/uv" "uv cache directory"
+ensure_persistent_dir UV_TOOL_DIR "$HERMES_HOME/uv/tools" "uv tool directory"
+ensure_persistent_dir UV_TOOL_BIN_DIR "$HERMES_HOME/bin" "uv tool bin directory"
+ensure_persistent_dir NPM_CONFIG_PREFIX "$HERMES_HOME/npm" "npm global prefix"
+ensure_persistent_dir NPM_CONFIG_CACHE "$HERMES_HOME/cache/npm" "npm cache directory"
+ensure_persistent_dir PNPM_HOME "$HERMES_HOME/pnpm" "pnpm home directory"
+ensure_persistent_dir YARN_GLOBAL_FOLDER "$HERMES_HOME/yarn/global" "Yarn global directory"
+ensure_persistent_dir YARN_CACHE_FOLDER "$HERMES_HOME/cache/yarn" "Yarn cache directory"
+ensure_persistent_dir COREPACK_HOME "$HERMES_HOME/corepack" "Corepack home directory"
+ensure_persistent_dir CARGO_HOME "$HERMES_HOME/cargo" "Cargo home directory"
+ensure_persistent_dir RUSTUP_HOME "$HERMES_HOME/rustup" "Rustup home directory"
+ensure_persistent_dir GOPATH "$HERMES_HOME/go" "Go workspace directory"
+ensure_persistent_dir GOBIN "$HERMES_HOME/bin" "Go bin directory"
+ensure_persistent_dir BUN_INSTALL "$HERMES_HOME/bun" "Bun install directory"
+ensure_persistent_dir DENO_INSTALL "$HERMES_HOME/deno" "Deno install directory"
+ensure_persistent_dir GEM_HOME "$HERMES_HOME/gem" "Ruby gem home directory"
+if [ -z "${GEM_PATH:-}" ]; then export GEM_PATH="$GEM_HOME"; fi
+ensure_persistent_dir COMPOSER_HOME "$HERMES_HOME/composer" "Composer home directory"
+ensure_persistent_dir DOTNET_CLI_HOME "$HERMES_HOME/dotnet" ".NET CLI home directory"
+
+export PATH="$HERMES_HOME/bin:$PYTHONUSERBASE/bin:$NPM_CONFIG_PREFIX/bin:$PNPM_HOME:$CARGO_HOME/bin:$GOPATH/bin:$BUN_INSTALL/bin:$DENO_INSTALL/bin:$GEM_HOME/bin:$COMPOSER_HOME/vendor/bin:/home/hermeswebui/.local/bin/:$PATH"
+
+persistent_env_file="$HERMES_HOME/persistent-env.sh"
+cat > "$persistent_env_file" <<EOF
+export HERMES_HOME="$HERMES_HOME"
+export GH_CONFIG_DIR="$GH_CONFIG_DIR"
+export XDG_CONFIG_HOME="$XDG_CONFIG_HOME"
+export PYTHONUSERBASE="$PYTHONUSERBASE"
+export PIP_CACHE_DIR="$PIP_CACHE_DIR"
+export PIPX_HOME="$PIPX_HOME"
+export PIPX_BIN_DIR="$PIPX_BIN_DIR"
+export UV_CACHE_DIR="$UV_CACHE_DIR"
+export UV_TOOL_DIR="$UV_TOOL_DIR"
+export UV_TOOL_BIN_DIR="$UV_TOOL_BIN_DIR"
+export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX"
+export NPM_CONFIG_CACHE="$NPM_CONFIG_CACHE"
+export PNPM_HOME="$PNPM_HOME"
+export YARN_GLOBAL_FOLDER="$YARN_GLOBAL_FOLDER"
+export YARN_CACHE_FOLDER="$YARN_CACHE_FOLDER"
+export COREPACK_HOME="$COREPACK_HOME"
+export CARGO_HOME="$CARGO_HOME"
+export RUSTUP_HOME="$RUSTUP_HOME"
+export GOPATH="$GOPATH"
+export GOBIN="$GOBIN"
+export BUN_INSTALL="$BUN_INSTALL"
+export DENO_INSTALL="$DENO_INSTALL"
+export GEM_HOME="$GEM_HOME"
+export GEM_PATH="$GEM_PATH"
+export COMPOSER_HOME="$COMPOSER_HOME"
+export DOTNET_CLI_HOME="$DOTNET_CLI_HOME"
+export PATH="$HERMES_HOME/bin:$PYTHONUSERBASE/bin:$NPM_CONFIG_PREFIX/bin:$PNPM_HOME:$CARGO_HOME/bin:$GOPATH/bin:$BUN_INSTALL/bin:$DENO_INSTALL/bin:$GEM_HOME/bin:$COMPOSER_HOME/vendor/bin:/home/hermeswebui/.local/bin:\$PATH"
+EOF
+chmod 644 "$persistent_env_file" || error_exit "Failed to chmod $persistent_env_file"
+if ! grep -q "Hermes persistent installer environment" /home/hermeswebui/.bashrc 2>/dev/null; then
+  cat >> /home/hermeswebui/.bashrc <<'EOF'
+
+# Hermes persistent installer environment
+if [ -f "$HOME/.hermes/persistent-env.sh" ]; then
+  . "$HOME/.hermes/persistent-env.sh"
+fi
+EOF
+fi
+
 echo ""; echo "-- HERMES_WEBUI_DEFAULT_WORKSPACE: Default workspace directory shown on first launch"
 if [ -z "${HERMES_WEBUI_DEFAULT_WORKSPACE+x}" ]; then echo "HERMES_WEBUI_DEFAULT_WORKSPACE not set, setting to /workspace"; export HERMES_WEBUI_DEFAULT_WORKSPACE="/workspace"; fi;
 echo "-- HERMES_WEBUI_DEFAULT_WORKSPACE: $HERMES_WEBUI_DEFAULT_WORKSPACE"
@@ -284,7 +364,6 @@ fi
 echo ""; echo "==================="
 echo ""; echo "== Installing uv and creating a new virtual environment for hermes-webui"
 
-export PATH="$HERMES_HOME/bin:/home/hermeswebui/.local/bin/:$PATH"
 if command -v uv &>/dev/null; then
   echo "-- uv already installed ($(uv --version)), skipping download"
 else
@@ -293,9 +372,7 @@ else
 fi
 export UV_PROJECT_ENVIRONMENT=venv
 
-export UV_CACHE_DIR=/uv_cache
-sudo mkdir -p ${UV_CACHE_DIR} || error_exit "Failed to create /uv_cache directory"
-sudo chown hermeswebui:hermeswebui ${UV_CACHE_DIR} || error_exit "Failed to set owner of ${UV_CACHE_DIR} to hermeswebui user"
+echo "-- UV_CACHE_DIR: ${UV_CACHE_DIR}"
 
 cd /app
 if [ -f /app/venv/bin/python3 ]; then
