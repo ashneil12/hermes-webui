@@ -341,10 +341,10 @@ def generate_title_raw_via_aux(
                 if raw:
                     return raw, ('llm_aux' if idx == 0 else 'llm_aux_retry')
             except Exception as e:
-                logger.debug("Aux title generation attempt %s failed: %s", idx + 1, e)
+                logger.warning("Aux title generation attempt %s failed: %s", idx + 1, e)
         return None, 'llm_error_aux'
     except Exception as e:
-        logger.debug("Aux title generation failed: %s", e)
+        logger.warning("Aux title generation failed: %s", e)
         return None, 'llm_error_aux'
 
 
@@ -421,7 +421,7 @@ def generate_title_raw_via_agent(agent, user_text: str, assistant_text: str) -> 
                 if raw:
                     return raw, ('llm' if idx == 0 else 'llm_retry')
             except Exception as e:
-                logger.debug(
+                logger.warning(
                     "Agent title generation attempt %s failed: provider=%s model=%s error=%s",
                     idx + 1,
                     getattr(agent, 'provider', None),
@@ -430,7 +430,7 @@ def generate_title_raw_via_agent(agent, user_text: str, assistant_text: str) -> 
                 )
         return None, 'llm_error'
     except Exception as e:
-        logger.debug("Agent title generation failed: %s", e)
+        logger.warning("Agent title generation failed: %s", e)
         return None, 'llm_error'
     finally:
         agent.reasoning_config = prev_reasoning
@@ -529,7 +529,9 @@ def _fallback_title_from_exchange(user_text: str, assistant_text: str) -> Option
                 return 'Time management discussion'
             if any(k in combined for k in ('hermes', 'codex', 'ai')):
                 return 'AI productivity discussion'
-            return 'Conversation topic'
+            # No meaningful Latin signal — let the caller keep the provisional
+            # first-message-excerpt title rather than overwriting with a generic placeholder.
+            return None
         if any(k in combined for k in ('time', 'schedule', 'efficiency', 'manage', 'fitness', 'singing', 'calligraphy')):
             return f'{topic_name} time management'
         if any(k in combined for k in ('hermes', 'codex', 'ai')):
@@ -556,7 +558,7 @@ def _fallback_title_from_exchange(user_text: str, assistant_text: str) -> Option
     }
     tokens = re.findall(r'[A-Za-z0-9][A-Za-z0-9_./+-]*', head)
     if not tokens:
-        return 'Conversation topic'
+        return None
 
     picked = []
     for tok in tokens:
@@ -570,7 +572,10 @@ def _fallback_title_from_exchange(user_text: str, assistant_text: str) -> Option
 
     if picked:
         return ' '.join(picked)[:60]
-    return 'Conversation topic'
+    # Couldn't extract anything useful — fall back to the raw head excerpt
+    # rather than a generic placeholder, so the chat list still shows
+    # something recognizable.
+    return head[:60] or None
 
 
 def _run_background_title_update(session_id: str, user_text: str, assistant_text: str, placeholder_title: str, put_event, agent=None):
@@ -607,9 +612,16 @@ def _run_background_title_update(session_id: str, user_text: str, assistant_text
                 next_title, llm_status, raw_preview = _generate_llm_session_title_for_agent(agent, user_text, assistant_text)
         source = llm_status
         if not next_title:
+            logger.warning(
+                "LLM session title generation failed for session=%s status=%s — "
+                "falling back to local heuristic. Consider configuring "
+                "auxiliary.title_generation in config.yaml.",
+                session_id,
+                llm_status,
+            )
             next_title = _fallback_title_from_exchange(user_text, assistant_text)
             if next_title:
-                logger.debug("Using local fallback for session title generation")
+                logger.info("Using local fallback for session title (session=%s)", session_id)
                 source = 'fallback'
         wrote_title = False
         effective_title = current

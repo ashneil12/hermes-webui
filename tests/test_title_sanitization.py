@@ -51,16 +51,17 @@ class TestGeneratedTitleSanitization(unittest.TestCase):
             "Session title auto-summary test",
         )
 
-    def test_fallback_title_non_latin_input_uses_english_placeholder(self):
-        self.assertEqual(
+    def test_fallback_title_non_latin_input_returns_none(self):
+        # When the heuristic can't extract anything meaningful, it should
+        # return None so the caller keeps the provisional first-message
+        # excerpt rather than overwriting it with a generic placeholder.
+        self.assertIsNone(
             _fallback_title_from_exchange("讨论一下这个问题", ""),
-            "Conversation topic",
         )
 
-    def test_fallback_title_non_latin_quoted_topic_uses_english_placeholder(self):
-        self.assertEqual(
+    def test_fallback_title_non_latin_quoted_topic_returns_none(self):
+        self.assertIsNone(
             _fallback_title_from_exchange('Please review "讨论主题"', ""),
-            "Conversation topic",
         )
 
     def test_title_generation_source_has_no_cjk_literals(self):
