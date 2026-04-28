@@ -1,7 +1,11 @@
 """Hermes Web UI -- startup helpers."""
 from __future__ import annotations
+import json
+import logging
 import os, stat, subprocess, sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Credential files that should never be world-readable
 _SENSITIVE_FILES = (
@@ -102,3 +106,81 @@ def auto_install_agent_deps() -> bool:
     except Exception as e:
         print(f'[!!] Auto-install error: {e}', flush=True)
         return False
+
+
+def sweep_stale_inflight_state() -> int:
+    """Clear stale in-flight bookkeeping from all on-disk sessions at boot.
+
+    A server restart or crash during a streaming turn leaves
+    ``active_stream_id`` set on the session JSON, since STREAMS lives in
+    memory only. The frontend reads that field on page load and renders a
+    stuck "THINKING..." indicator that survives refresh.
+
+    At server boot ``STREAMS`` is empty by definition, so any on-disk
+    ``active_stream_id`` is stale. We use the session index as a fast
+    pre-filter so we only load+save the (small) set of sessions that
+    actually need cleaning.
+
+    Returns the number of sessions cleaned up.
+    """
+    try:
+        from api.models import (
+            SESSION_DIR,
+            SESSION_INDEX_FILE,
+            Session,
+            clear_stale_inflight_state,
+        )
+    except Exception:
+        # Models module not importable (e.g. during certain test setups);
+        # skip silently — this is a best-effort housekeeping pass.
+        logger.debug("sweep_stale_inflight_state: models import failed", exc_info=True)
+        return 0
+
+    if not SESSION_DIR.exists():
+        return 0
+
+    candidates: list[str] = []
+    if SESSION_INDEX_FILE.exists():
+        try:
+            index = json.loads(SESSION_INDEX_FILE.read_text(encoding='utf-8'))
+            if isinstance(index, list):
+                candidates = [
+                    e['session_id']
+                    for e in index
+                    if isinstance(e, dict)
+                    and e.get('active_stream_id')
+                    and e.get('session_id')
+                ]
+        except Exception:
+            # Index missing/corrupt — fall through to full scan
+            candidates = []
+
+    if not candidates:
+        # Index didn't help — scan only files that have active_stream_id set.
+        for p in SESSION_DIR.glob('*.json'):
+            if p.name.startswith('_'):
+                continue
+            try:
+                data = json.loads(p.read_text(encoding='utf-8'))
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get('active_stream_id'):
+                candidates.append(p.stem)
+
+    cleaned = 0
+    empty: set = set()  # STREAMS is empty at boot — any active_stream_id is stale
+    for sid in candidates:
+        try:
+            s = Session.load(sid)
+            if s and clear_stale_inflight_state(s, active_stream_ids=empty):
+                cleaned += 1
+        except Exception:
+            logger.debug(
+                "sweep_stale_inflight_state: failed for session=%s", sid, exc_info=True,
+            )
+            continue
+
+    if cleaned:
+        print(f'  [cleanup] cleared stale streaming state on {cleaned} session(s)', flush=True)
+
+    return cleaned

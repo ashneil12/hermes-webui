@@ -10,7 +10,13 @@ import logging
 from typing import Any
 
 from api.config import LOCK, _get_session_agent_lock
-from api.models import get_session, SESSIONS
+from api.models import (
+    get_session,
+    SESSIONS,
+    clear_stale_inflight_state,
+    _active_stream_ids,
+    _is_streaming_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +121,10 @@ def session_status(session_id: str) -> dict[str, Any]:
     (active_stream_id is set).
     """
     s = get_session(session_id)
+    # Self-heal stale active_stream_id (server restart during streaming) so
+    # /status doesn't lie about agent_running. Validates against live STREAMS.
+    active_stream_ids = _active_stream_ids()
+    clear_stale_inflight_state(s, active_stream_ids=active_stream_ids)
     inp = int(s.input_tokens or 0)
     out = int(s.output_tokens or 0)
     return {
@@ -126,7 +136,9 @@ def session_status(session_id: str) -> dict[str, Any]:
         'message_count': len(s.messages or []),
         'created_at': s.created_at,
         'updated_at': s.updated_at,
-        'agent_running': bool(getattr(s, 'active_stream_id', None)),
+        'agent_running': _is_streaming_session(
+            getattr(s, 'active_stream_id', None), active_stream_ids,
+        ),
         'input_tokens': inp,
         'output_tokens': out,
         'total_tokens': inp + out,

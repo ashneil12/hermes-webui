@@ -18,7 +18,7 @@ from api.config import HOST, PORT, STATE_DIR, SESSION_DIR, DEFAULT_WORKSPACE
 from api.helpers import j, get_profile_cookie
 from api.profiles import set_request_profile, clear_request_profile
 from api.routes import handle_get, handle_post
-from api.startup import auto_install_agent_deps, fix_credential_permissions
+from api.startup import auto_install_agent_deps, fix_credential_permissions, sweep_stale_inflight_state
 from api.updates import WEBUI_VERSION
 
 
@@ -152,6 +152,16 @@ def main() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
     DEFAULT_WORKSPACE.mkdir(parents=True, exist_ok=True)
+
+    # STREAMS is in-memory only. If the previous process exited mid-stream
+    # (redeploy, crash, OOM kill), sessions on disk still carry an
+    # active_stream_id that points at a stream that no longer exists. Without
+    # this sweep the frontend renders a stuck "THINKING..." indicator on next
+    # page load that no refresh can clear.
+    try:
+        sweep_stale_inflight_state()
+    except Exception as e:
+        print(f'[!!] WARNING: stale-inflight sweep failed: {e}', flush=True)
 
     # Start the gateway session watcher for real-time SSE updates
     try:

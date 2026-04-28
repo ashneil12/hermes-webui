@@ -403,6 +403,7 @@ from api.models import (
     import_cli_session,
     get_cli_sessions,
     get_cli_session_messages,
+    clear_stale_inflight_state,
 )
 from api.workspace import (
     load_workspaces,
@@ -805,6 +806,12 @@ def handle_get(handler, parsed) -> bool:
         try:
             _t1 = _time.monotonic()
             s = get_session(sid, metadata_only=(not load_messages))
+            # Self-heal stale active_stream_id from server restarts/crashes during
+            # streaming. Without this, the frontend sees a ghost stream id on
+            # page load and renders a stuck "THINKING..." indicator that no
+            # refresh can clear (the stream is gone from STREAMS but the field
+            # was never cleared on disk). See clear_stale_inflight_state docstring.
+            clear_stale_inflight_state(s)
             _t2 = _time.monotonic()
             effective_model = (
                 _resolve_effective_session_model_for_display(s)
@@ -2000,6 +2007,7 @@ def _handle_session_export(handler, parsed):
         s = get_session(sid)
     except KeyError:
         return bad(handler, "Session not found", 404)
+    clear_stale_inflight_state(s)
     safe = redact_session_data(s.__dict__)
     payload = json.dumps(safe, ensure_ascii=False, indent=2)
     handler.send_response(200)
@@ -3472,6 +3480,9 @@ def _handle_session_compress(handler, body):
     except KeyError:
         return bad(handler, "Session not found", 404)
 
+    # Self-heal: a stale active_stream_id from a prior crash/restart should not
+    # block compression. Only refuse if the stream is actually live.
+    clear_stale_inflight_state(s)
     if getattr(s, "active_stream_id", None):
         return bad(handler, "Session is still streaming; wait for the current turn to finish.", 409)
 

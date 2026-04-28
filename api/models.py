@@ -194,6 +194,46 @@ def _active_stream_ids():
 def _is_streaming_session(active_stream_id, active_stream_ids):
     return bool(active_stream_id and active_stream_id in active_stream_ids)
 
+
+def clear_stale_inflight_state(s, active_stream_ids=None, persist=True):
+    """Clear in-flight bookkeeping when ``active_stream_id`` points at a dead stream.
+
+    A server restart or hard crash during a streaming turn leaves
+    ``active_stream_id`` set on the on-disk session forever, since
+    STREAMS lives in memory only. The frontend reads this field on
+    page load and renders a "THINKING..." indicator and "STOP
+    GENERATING" button that no refresh can clear.
+
+    On detection, this helper clears ``active_stream_id``,
+    ``pending_user_message``, ``pending_attachments`` and
+    ``pending_started_at`` together (the four fields are always
+    written and cleared together by the streaming worker), and
+    persists the cleared state so subsequent reads see clean state.
+
+    Returns True if state was stale and was cleared, False otherwise.
+    """
+    active_stream_id = getattr(s, 'active_stream_id', None)
+    if not active_stream_id:
+        return False
+    if active_stream_ids is None:
+        active_stream_ids = _active_stream_ids()
+    if active_stream_id in active_stream_ids:
+        return False
+    s.active_stream_id = None
+    s.pending_user_message = None
+    s.pending_attachments = []
+    s.pending_started_at = None
+    if persist:
+        try:
+            s.save()
+        except Exception:
+            logger.debug(
+                "Failed to persist stale-inflight cleanup for session=%s",
+                getattr(s, 'session_id', '?'),
+            )
+    return True
+
+
 def _session_sort_timestamp(session):
     if isinstance(session, dict):
         return session.get('last_message_at') or session.get('updated_at') or 0
