@@ -50,6 +50,16 @@ SETTINGS_FILE = STATE_DIR / "settings.json"
 LAST_WORKSPACE_FILE = STATE_DIR / "last_workspace.txt"
 PROJECTS_FILE = STATE_DIR / "projects.json"
 
+# Chat-jobs JSONL event log directory. The streaming engine appends one
+# event per line to <CHAT_JOBS_DIR>/<stream_id>.jsonl so the chat-jobs
+# sidecar (sidecar/server.py) can serve cursor-resumable SSE for tab-
+# close and reconnect flows. Override with HERMES_CHAT_JOBS_DIR.
+CHAT_JOBS_DIR = (
+    Path(os.getenv("HERMES_CHAT_JOBS_DIR", str(STATE_DIR / "chat-jobs")))
+    .expanduser()
+    .resolve()
+)
+
 logger = logging.getLogger(__name__)
 
 

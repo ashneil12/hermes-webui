@@ -19,13 +19,23 @@ logger = logging.getLogger(__name__)
 
 from api.config import (
     STREAMS, STREAMS_LOCK, CANCEL_FLAGS, AGENT_INSTANCES, STREAM_PARTIAL_TEXT,
-    LOCK, SESSIONS, SESSION_DIR,
+    LOCK, SESSIONS, SESSION_DIR, CHAT_JOBS_DIR,
     _get_session_agent_lock, _set_thread_env, _clear_thread_env,
     SESSION_AGENT_LOCKS, SESSION_AGENT_LOCKS_LOCK,
     resolve_model_provider,
 )
 from api.helpers import redact_session_data
 from api.metering import meter
+
+# JSONL chat-event log writer for the durability sidecar. Tee'd from
+# put() so the sidecar can serve cursor-resumable SSE on reconnect.
+# Import is best-effort: if the sidecar package is missing for any reason
+# (incomplete install, downgrade), live streaming still works — we just
+# lose reconnect durability for that run.
+try:
+    from sidecar.log_reader import append_event_atomic as _chat_jobs_append
+except Exception:   # pragma: no cover - defensive
+    _chat_jobs_append = None
 
 # Global lock for os.environ writes. Per-session locks (_agent_lock) prevent
 # concurrent runs of the SAME session, but two DIFFERENT sessions can still
@@ -1163,6 +1173,10 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
     _metering_thread = threading.Thread(target=_metering_ticker, daemon=True)
     _metering_thread.start()
 
+    # Sequence counter for the JSONL tee. Local to this stream so seqs
+    # restart at 0 per stream, matching the sidecar's wire contract.
+    _put_seq = [0]
+
     def put(event, data):
         # If cancelled, drop all further events except the cancel event itself
         if cancel_event.is_set() and event not in ('cancel', 'error'):
@@ -1171,6 +1185,21 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
             q.put_nowait((event, data))
         except Exception:
             logger.debug("Failed to put event to queue")
+
+        # Tee to the chat-jobs JSONL so the durability sidecar can replay
+        # this event to a reconnecting browser. Disk write is intentionally
+        # outside the queue.put_nowait() try-block: the live stream is the
+        # primary; durability is best-effort. A write failure (full disk,
+        # readonly mount) is logged at debug level only.
+        if _chat_jobs_append is not None:
+            try:
+                seq = _put_seq[0]
+                _put_seq[0] = seq + 1
+                _chat_jobs_append(
+                    CHAT_JOBS_DIR, stream_id, event, data, seq=seq,
+                )
+            except Exception:
+                logger.debug("chat-jobs JSONL append failed", exc_info=True)
 
     # Initialised here (before any code that may raise) so the outer `finally`
     # block can safely check `if _checkpoint_stop is not None` even when an
