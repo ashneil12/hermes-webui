@@ -1234,8 +1234,49 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
                 register_gateway_notify as _reg_notify,
                 unregister_gateway_notify as _unreg_notify,
             )
+            try:
+                # Enrichment imports — pull approval_id off the queue entry
+                # so it can ride along on the SSE event. Wrapped in its own
+                # try so the basic notify still works if the underlying
+                # approval module is older than the gateway-queue era.
+                from tools.approval import (
+                    _gateway_queues as _approval_gateway_queues,
+                    _lock as _approval_lock,
+                )
+                _can_enrich_approval = True
+            except ImportError:
+                _can_enrich_approval = False
             def _approval_notify_cb(approval_data):
-                put('approval', approval_data)
+                # vanilla approval.py emits the bare approval_data dict
+                # ({command, pattern_key, pattern_keys, description}) — no
+                # approval_id, no session_id. The dashboard then has to
+                # call /api/approval/pending to learn the id, and that
+                # endpoint only reads tools.approval._pending (a separate
+                # store from _gateway_queues, which is where the gateway
+                # flow actually puts entries). Result: pending returns
+                # null, the dashboard throws 409 "No pending approval
+                # found", the user sees "Approval failed. Try again." and
+                # the agent thread stays parked. Inject approval_id and
+                # session_id here so the SSE event is self-describing and
+                # the dashboard can POST /api/approval/respond directly
+                # without the broken pending lookup.
+                enriched = dict(approval_data)
+                enriched.setdefault('session_id', session_id)
+                if _can_enrich_approval and not enriched.get('approval_id'):
+                    with _approval_lock:
+                        entries = _approval_gateway_queues.get(session_id) or []
+                        # The entry we just queued is the most recent one
+                        # at the tail. Walk backwards and grab its data;
+                        # entries are _ApprovalEntry instances with .data
+                        # carrying the approval_id setdefault'd in __init__.
+                        for candidate in reversed(entries):
+                            candidate_data = getattr(candidate, 'data', None)
+                            if isinstance(candidate_data, dict):
+                                aid = candidate_data.get('approval_id')
+                                if aid:
+                                    enriched['approval_id'] = aid
+                                    break
+                put('approval', enriched)
             _reg_notify(session_id, _approval_notify_cb)
             _approval_registered = True
         except ImportError:
