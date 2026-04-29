@@ -100,6 +100,56 @@ class TestGatewayApprovalUnblocking:
         result = resolve_gateway_approval(sid, "once")
         assert result == 0
 
+    def test_resolve_by_approval_id_targets_specific_entry(self):
+        """When two approvals are queued back-to-back (e.g. an rm + a sudo
+        in the same agent turn), the user's click on the SECOND card must
+        resolve the SECOND entry, not whichever is at the head of the
+        FIFO. Without passing approval_id through to resolve_gateway_approval,
+        a "deny" on the second card would deny the first, and a "once"
+        could resolve a command the user hadn't seen yet — making it
+        feel like the agent was approving things on its own. Mirrors
+        the symptom from HermesOS handoff 2026-04-29.
+        """
+        sid = f"unit-by-id-{uuid.uuid4().hex[:8]}"
+        first = _ApprovalEntry({"command": "rm -rf /tmp/x", "approval_id": "approval-first"})
+        second = _ApprovalEntry({"command": "sudo write /etc/", "approval_id": "approval-second"})
+        with _lock:
+            _gateway_queues[sid] = [first, second]
+
+        resolved = resolve_gateway_approval(
+            sid, "deny", resolve_all=False, approval_id="approval-second"
+        )
+
+        assert resolved == 1
+        # ONLY the second was resolved; the first is still pending.
+        assert second.event.is_set()
+        assert second.result == "deny"
+        assert not first.event.is_set()
+        assert first.result is None
+        with _lock:
+            queue = _gateway_queues.get(sid, [])
+            assert queue == [first]
+
+    def test_resolve_by_unknown_approval_id_does_not_fall_back_to_oldest(self):
+        """If a stale approval_id is sent (e.g. from a click on a card the
+        agent already cleared via timeout/cancel), the resolver must NOT
+        silently fall back to popping the oldest queue entry — that would
+        let a stale "deny" silently kill an unrelated in-flight approval.
+        Returns 0 instead so the dashboard can surface a real error.
+        """
+        sid = f"unit-stale-id-{uuid.uuid4().hex[:8]}"
+        live = _ApprovalEntry({"command": "real", "approval_id": "approval-live"})
+        with _lock:
+            _gateway_queues[sid] = [live]
+
+        resolved = resolve_gateway_approval(
+            sid, "deny", resolve_all=False, approval_id="approval-stale"
+        )
+
+        assert resolved == 0
+        assert not live.event.is_set()
+        assert live.result is None
+
     def test_resolve_all_unblocks_multiple_entries(self):
         """resolve_all=True unblocks every pending entry in the queue."""
         sid = f"unit-resolve-all-{uuid.uuid4().hex[:8]}"

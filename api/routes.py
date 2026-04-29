@@ -3359,7 +3359,7 @@ def _handle_approval_respond(handler, body):
 
     if pending:
         keys = pending.get("pattern_keys") or [pending.get("pattern_key", "")]
-        if choice in ("once", "session"):
+        if choice == "session":
             for k in keys:
                 approve_session(sid, k)
         elif choice == "always":
@@ -3367,10 +3367,28 @@ def _handle_approval_respond(handler, body):
                 approve_session(sid, k)
                 approve_permanent(k)
             save_permanent_allowlist(_permanent_approved)
+        # choice == "once": no persistence — single-use grant, matches the
+        # gateway flow's own per-warning bookkeeping in
+        # tools/approval._gateway_or_ask_approval (vanilla-hermes-agent)
+        # which explicitly leaves "once" out of the session whitelist.
+        # Conflating once with session here would silently auto-approve
+        # the next same-pattern command in the same chat without the
+        # user ever clicking — which is exactly the bug pattern that
+        # makes follow-up tool calls feel like they "pre-approved
+        # themselves".
     # Unblock the agent thread waiting in the gateway approval queue.
     # This is the primary signal when streaming is active — the agent
     # thread is parked in entry.event.wait() and needs to be woken up.
-    resolve_gateway_approval(sid, choice, resolve_all=False)
+    # Pass approval_id so the resolver pops the SPECIFIC entry the user
+    # clicked on, not whichever happens to be at the head of the FIFO.
+    # With two approvals queued back-to-back (e.g. an rm + a sudo in the
+    # same turn), the previous resolve_all=False+no-id call would pop
+    # the OLDEST entry, so a "deny" on the second card actually denied
+    # the first — and an out-of-order "once" could resolve a command the
+    # user hadn't seen yet. Matching by id keeps user intent and worker
+    # threads in lock-step.
+    resolve_gateway_approval(sid, choice, resolve_all=False,
+                             approval_id=approval_id or None)
     return j(handler, {"ok": True, "choice": choice})
 
 
