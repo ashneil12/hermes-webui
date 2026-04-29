@@ -1155,6 +1155,7 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
     old_exec_ask = None
     old_session_key = None
     old_hermes_home = None
+    old_profile_env = {}
 
     # ── MCP Server Discovery (lazy import, idempotent) ──
     # discover_mcp_tools() is called here (rather than at server startup) so that
@@ -1226,12 +1227,16 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
         # two concurrent tabs on different profiles don't clobber each other via the
         # process-level active-profile global.  Falls back gracefully.
         try:
-            from api.profiles import get_hermes_home_for_profile
-            _profile_home = str(get_hermes_home_for_profile(getattr(s, 'profile', None)))
+            from api.profiles import get_hermes_home_for_profile, get_profile_runtime_env
+            _profile_home_path = get_hermes_home_for_profile(getattr(s, 'profile', None))
+            _profile_home = str(_profile_home_path)
+            _profile_runtime_env = get_profile_runtime_env(_profile_home_path)
         except ImportError:
             _profile_home = os.environ.get('HERMES_HOME', '')
+            _profile_runtime_env = {}
 
         _set_thread_env(
+            **_profile_runtime_env,
             TERMINAL_CWD=str(s.workspace),
             HERMES_EXEC_ASK='1',
             HERMES_SESSION_KEY=session_id,
@@ -1242,10 +1247,12 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
         # The finally block re-acquires to restore — keeping critical sections short
         # and preventing a deadlock where the restore would re-enter the same lock.
         with _ENV_LOCK:
+            old_profile_env = {key: os.environ.get(key) for key in _profile_runtime_env}
             old_cwd = os.environ.get('TERMINAL_CWD')
             old_exec_ask = os.environ.get('HERMES_EXEC_ASK')
             old_session_key = os.environ.get('HERMES_SESSION_KEY')
             old_hermes_home = os.environ.get('HERMES_HOME')
+            os.environ.update(_profile_runtime_env)
             os.environ['TERMINAL_CWD'] = str(s.workspace)
             os.environ['HERMES_EXEC_ASK'] = '1'
             os.environ['HERMES_SESSION_KEY'] = session_id
@@ -2035,6 +2042,9 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
                 except Exception:
                     logger.debug("Failed to unregister clarify callback")
             with _ENV_LOCK:
+                for _key, _old_value in old_profile_env.items():
+                    if _old_value is None: os.environ.pop(_key, None)
+                    else: os.environ[_key] = _old_value
                 if old_cwd is None: os.environ.pop('TERMINAL_CWD', None)
                 else: os.environ['TERMINAL_CWD'] = old_cwd
                 if old_exec_ask is None: os.environ.pop('HERMES_EXEC_ASK', None)
