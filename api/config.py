@@ -1056,24 +1056,47 @@ def resolve_model_provider(model_id: str) -> tuple:
 
 
 def get_effective_default_model(config_data: dict | None = None) -> str:
-    """Resolve the effective Hermes default model from config, then env overrides."""
+    """Resolve the effective Hermes default model.
+
+    Priority (highest first):
+      1. config.yaml's `model.default` — written by the WebUI Settings →
+         BASE LLM OVERRIDE flow via set_hermes_default_model(). This is the
+         user-facing source of truth for what model the agent should run.
+      2. HERMES_MODEL / OPENAI_MODEL / LLM_MODEL env vars — fallback for
+         fresh installs (no config.yaml yet) and for one-shot CLI runs that
+         set the model on the command line.
+      3. HERMES_WEBUI_DEFAULT_MODEL env var (DEFAULT_MODEL constant) — last-
+         resort default baked in by the deployer at provision time.
+
+    Why config wins over env: the env vars are written once at provision
+    time, but the user can change their model selection in the UI any
+    number of times after that. If env override beat config, the user's
+    in-UI selection would silently never take effect — every session
+    would start over again on the provision-time model. That bug looked
+    like "I picked claude-opus-4-7 in BASE LLM OVERRIDE but the agent
+    keeps using deepseek-v4-pro," because the dashboard does write to
+    config.yaml correctly via /api/default-model but the runtime ignored
+    it. See HermesOS handoff 2026-04-29.
+    """
     active_cfg = config_data if config_data is not None else cfg
-    default_model = DEFAULT_MODEL
 
     model_cfg = active_cfg.get("model", {})
     if isinstance(model_cfg, str):
-        default_model = model_cfg.strip()
+        cfg_default = model_cfg.strip()
+        if cfg_default:
+            return cfg_default
     elif isinstance(model_cfg, dict):
         cfg_default = str(model_cfg.get("default") or "").strip()
         if cfg_default:
-            default_model = cfg_default
+            return cfg_default
 
     env_model = (
         os.getenv("HERMES_MODEL") or os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL")
     )
     if env_model:
-        default_model = env_model.strip()
-    return default_model
+        return env_model.strip()
+
+    return DEFAULT_MODEL
 
 
 # ── Reasoning config (CLI parity for /reasoning) ─────────────────────────────
