@@ -416,8 +416,8 @@ Or using the agent venv explicitly:
 ```
 
 Tests run against an isolated server on port 8788 with a separate state directory.
-Production data and real cron jobs are never touched. Current count: **1898 tests**
-across 53 test files.
+Production data and real cron jobs are never touched. Current count: **3309 tests**
+across 100+ test files.
 
 ---
 
@@ -588,9 +588,28 @@ State lives outside the repo at `~/.hermes/webui-mvp/` by default
 
 ## Contributors
 
-Hermes WebUI is built with help from the open-source community. Every PR — whether merged directly or incorporated via rebase — shapes the project, and we're grateful to everyone who has taken the time to contribute.
+Hermes WebUI is built with help from the open-source community. Every PR — whether merged directly or incorporated via batch release — shapes the project, and we're grateful to everyone who has taken the time to contribute.
 
-### Major contributions
+**66 contributors have shipped code that landed in a release tag** as of v0.50.245. The full credit roll lives in [`CONTRIBUTORS.md`](CONTRIBUTORS.md). The highlights:
+
+### Top contributors (by merged-PR count)
+
+| # | Contributor | PRs | First → latest release |
+|---|---|---:|---|
+| 1 | [@franksong2702](https://github.com/franksong2702) | 22 | `v0.50.49` → `v0.50.245` |
+| 2 | [@bergeouss](https://github.com/bergeouss) | 18 | `v0.50.49` → `v0.50.240` |
+| 3 | [@aronprins](https://github.com/aronprins) | 8 | `v0.47.0` → `v0.50.77` |
+| 4 | [@iRonin](https://github.com/iRonin) | 6 | `v0.41.0` |
+| 5 | [@24601](https://github.com/24601) | 6 | `v0.50.201` |
+| 6 | [@KingBoyAndGirl](https://github.com/KingBoyAndGirl) | 4 | `v0.50.232` → `v0.50.237` |
+| 7 | [@renheqiang](https://github.com/renheqiang) | 4 | `v0.50.93` |
+| 8 | [@ccqqlo](https://github.com/ccqqlo) | 3 | `v0.50.83` → `v0.50.207` |
+| 9 | [@deboste](https://github.com/deboste) | 3 | `v0.16.1` |
+| 10 | [@frap129](https://github.com/frap129) | 3 | `v0.50.157` → `v0.50.166` |
+
+See [`CONTRIBUTORS.md`](CONTRIBUTORS.md) for the full ranked list of all 66 contributors, including everyone with one or two merged PRs and the special-thanks roll for design and architectural contributions.
+
+### Notable contributions
 
 **[@aronprins](https://github.com/aronprins)** — v0.50.0 UI overhaul (PR #242)
 The biggest single contribution to the project: a complete UI redesign that moved model/profile/workspace controls into the composer footer, replaced the gear-icon settings panel with the Hermes Control Center (tabbed modal), removed the activity bar in favor of inline composer status, redesigned the session list with a `⋯` action dropdown, and added the workspace panel state machine. 26 commits, thoroughly designed and iterated through multiple review rounds.
@@ -609,8 +628,8 @@ Three interlocking improvements: workspace fallback resolution so the server rec
 **[@gabogabucho](https://github.com/gabogabucho)** — Spanish locale + onboarding wizard (PRs #275, #285)
 Full Spanish (`es`) locale covering all 175 UI strings, plus the one-shot bootstrap onboarding wizard that guides new users through provider setup on first launch — the feature most responsible for new users actually getting started.
 
-**[@bergeouss](https://github.com/bergeouss)** — Real-time gateway session sync (PR #274)
-Bridged the gateway session database (Telegram, Discord, Slack, etc.) into the WebUI sidebar with live SSE polling. Gateway sessions now appear alongside WebUI sessions in real time, without any changes to hermes-agent.
+**[@bergeouss](https://github.com/bergeouss)** — Provider management UI + gateway sync + Docker hardening (18 PRs, `v0.50.49` → `v0.50.240`)
+Real-time gateway session sync (Telegram/Discord/Slack into the WebUI sidebar via SSE), the provider management UI for adding/editing custom providers from Settings, the two-container Docker setup docs, OAuth provider status detection, profile isolation hardening (per-profile `.env` secrets), and the bulk of what users see when they touch Settings → Providers.
 
 **[@ccqqlo](https://github.com/ccqqlo)** — Terminal approval UX + custom model discovery + mobile close button (PRs #224, #225, #238, #333)
 A run of focused quality-of-life improvements: terminal tool approval prompts that stay visible long enough to actually be read, restored custom model API key discovery, and the redundant mobile close button fix that had been confusing users on narrow screens.
@@ -621,8 +640,8 @@ Added the 7th built-in theme: pure black backgrounds with warm accents tuned to 
 **[@Bobby9228](https://github.com/Bobby9228)** — Mobile Profiles button + Android Chrome fixes (PRs #253, #263, #265)
 Added the Profiles entry to the mobile navigation flow, making profile switching reachable on phones, plus a set of Android Chrome-specific fixes for the profile dropdown.
 
-**[@franksong2702](https://github.com/franksong2702)** — Session title guard + breadcrumb nav (PRs #301, #302)
-Two clean bug fixes / features: the session title guard that stops `title_from()` from overwriting user-renamed sessions after every turn, and clickable breadcrumb navigation in the workspace file preview panel.
+**[@franksong2702](https://github.com/franksong2702)** — Most prolific external contributor (22 PRs, `v0.50.49` → `v0.50.245`)
+The session title guard, breadcrumb workspace navigation, mobile workspace panel sliver fix (#1300), composer footer container queries, streaming session sidebar exemption (#1327), session sidecar repair, cron output preservation (#1295), profile default workspace persistence, and a long tail of polish across the session sidebar, mobile responsive layout, and workspace state machine.
 
 **[@betamod](https://github.com/betamod)** — Security hardening (PR #171)
 A comprehensive security audit PR covering CSRF protection, SSRF guards, XSS escaping improvements, and the env race condition between concurrent agent sessions — foundational security work that shipped in v0.39.0.
