@@ -2304,6 +2304,8 @@ function switchSettingsSection(name){
   if(dd && dd.value!==section) dd.value=section;
   // Lazy-load providers when the tab is opened
   if(section==='providers') loadProvidersPanel();
+  // Bind TTS settings handlers when Preferences opens
+  if(section==='preferences' && typeof ttsInitSettings==='function') ttsInitSettings();
 }
 
 function _syncHermesPanelSessionActions(){

@@ -105,7 +105,7 @@
       <div class="panel-head">
         <span data-i18n="tab_chat">Chat</span>
         <div class="panel-head-actions">
-          <button class="panel-head-btn" id="btnNewChat" title="New conversation (Cmd+K)" data-i18n-title="new_conversation" aria-label="New conversation">
+          <button class="panel-head-btn" id="btnNewChat" title="New conversation (Cmd+Shift+N)" data-i18n-title="new_conversation" aria-label="New conversation">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           </button>
         </div>
@@ -707,6 +707,37 @@
               <div style="font-size:11px;color:var(--muted);margin-bottom:6px" data-i18n="settings_desc_bot_name">Display name for the assistant throughout the UI. Defaults to Hermes.</div>
               <input type="text" id="settingsBotName" placeholder="Hermes" maxlength="64" style="width:100%;padding:8px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:13px">
             </div>
+            <div class="settings-section-head" style="margin-top:18px">
+              <div>
+                <div class="settings-section-title">Voice</div>
+                <div class="settings-section-meta">Speak assistant replies. Browser voice is instant; Kokoro is high-quality but downloads ~80 MB once.</div>
+              </div>
+            </div>
+            <div class="settings-field">
+              <label for="settingsTtsEngine">TTS engine</label>
+              <select id="settingsTtsEngine" style="width:100%;padding:8px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:6px">
+                <option value="browser">Browser (instant)</option>
+                <option value="kokoro">Kokoro 82M (high-quality, ~80 MB download)</option>
+              </select>
+            </div>
+            <div class="settings-field" id="settingsTtsVoiceWrap" style="display:none">
+              <label for="settingsTtsVoice">Voice</label>
+              <select id="settingsTtsVoice" style="width:100%;padding:8px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:6px"></select>
+            </div>
+            <div class="settings-field">
+              <label for="settingsTtsRate">Rate <span id="settingsTtsRateLabel" style="color:var(--muted);font-weight:normal">1.00×</span></label>
+              <input type="range" id="settingsTtsRate" min="0.5" max="2.0" step="0.05" value="1.0" style="width:100%">
+            </div>
+            <div class="settings-field">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input type="checkbox" id="settingsTtsAuto" style="width:15px;height:15px;accent-color:var(--accent)">
+                <span>Auto-speak assistant replies</span>
+              </label>
+              <div style="font-size:11px;color:var(--muted);margin-top:4px">Automatically speaks each completed assistant turn. Tap the speaker icon on any message to replay.</div>
+            </div>
+            <div class="settings-field">
+              <button id="settingsTtsTest" type="button" class="sm-btn" style="padding:6px 12px">Test voice</button>
+            </div>
             <button class="sm-btn" onclick="saveSettings()" style="margin-top:12px;width:100%;padding:8px;font-weight:600" data-i18n="settings_save_btn">Save Settings</button>
           </div>
           <div class="settings-pane" id="settingsPaneProviders">
@@ -831,6 +862,9 @@
 <script src="static/messages.js" defer></script>
 <script src="static/panels.js" defer></script>
 <script src="static/onboarding.js" defer></script>
+<script src="static/tts.js" defer></script>
+<script src="static/palette.js" defer></script>
+<script src="static/terminal.js" defer></script>
 <script src="static/boot.js" defer></script>
 </body>
 </html>

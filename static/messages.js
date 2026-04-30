@@ -814,6 +814,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       setComposerStatus('');
       playNotificationSound();
       sendBrowserNotification('Response complete',assistantText?assistantText.slice(0,100):'Task finished');
+      try{ if(typeof ttsMaybeAutoSpeak==='function') ttsMaybeAutoSpeak(); }catch(_){}
     });
 
     source.addEventListener('stream_end',e=>{

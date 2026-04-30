@@ -29,7 +29,19 @@ const COMMANDS=[
   {name:'voice',     desc:t('cmd_voice'),    fn:cmdVoice,     noEcho:true},
   {name:'reasoning', desc:t('cmd_reasoning'), fn:cmdReasoning, arg:'show|hide|none|minimal|low|medium|high|xhigh', subArgs:['show','hide','none','minimal','low','medium','high','xhigh'], noEcho:true},
   {name:'yolo', desc:t('cmd_yolo'), fn:cmdYolo, noEcho:true},
+  {name:'terminal',  desc:'Open the terminal panel', fn:cmdTerminal,  noEcho:true},
+  {name:'tts',       desc:'Toggle auto-speak',       fn:cmdTtsToggle, noEcho:true},
+  {name:'palette',   desc:'Open the command palette',fn:cmdPalette,   noEcho:true},
 ];
+
+function cmdTerminal(){ if(typeof openTerminal==='function') openTerminal(); else if(typeof showToast==='function') showToast('Terminal not available',2200); }
+function cmdPalette(){  if(typeof openPalette==='function')  openPalette();  }
+function cmdTtsToggle(){
+  if(!window.TTS){ if(typeof showToast==='function') showToast('TTS not loaded',1800); return; }
+  window.TTS.autoSpeak = !window.TTS.autoSpeak;
+  try{ localStorage.setItem('hermes-tts-auto', window.TTS.autoSpeak ? '1' : '0'); }catch(_){}
+  if(typeof showToast==='function') showToast('Auto-speak '+(window.TTS.autoSpeak?'on':'off'),1800);
+}
 
 const SLASH_SUBARG_SOURCES={
   model:{desc:t('cmd_model'), subArgs:'models'},

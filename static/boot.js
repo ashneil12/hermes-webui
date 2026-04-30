@@ -524,10 +524,11 @@ document.addEventListener('keydown',async e=>{
       return;
     }
   }
-  if((e.metaKey||e.ctrlKey)&&e.key==='k'){
+  // Cmd+K is now the command palette (handled in palette.js). For
+  // muscle-memory parity, Cmd+Shift+N keeps the old "new conversation"
+  // behaviour, and the palette's first entry is "New conversation".
+  if((e.metaKey||e.ctrlKey)&&e.shiftKey&&e.key.toLowerCase()==='n'){
     e.preventDefault();
-    // If the current session has no messages, just focus the composer rather than
-    // creating another empty session that will clutter the sidebar list (#1171).
     if(S.session&&(S.session.message_count||0)===0){$('msg').focus();return;}
     if(!S.busy){await newSession();await renderSessionList();closeMobileSidebar();$('msg').focus();}
   }
