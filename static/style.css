@@ -283,9 +283,15 @@
   :root:not(.dark) .cron-btn:hover{background:rgba(0,0,0,.08);}
   /* ── Smooth dark mode transitions ── */
   body,header,footer,aside,nav,main,div,button,input,textarea,select{transition-property:background-color,border-color,color;transition-duration:.15s;transition-timing-function:ease;}
+  :root{--app-titlebar-safe-top:0px;}
+  @supports (padding-top: env(safe-area-inset-top)){
+    @media (display-mode: standalone), (display-mode: fullscreen){
+      :root{--app-titlebar-safe-top:env(safe-area-inset-top,0px);}
+    }
+  }
   body{background:var(--bg);color:var(--text);height:100vh;height:100dvh;overflow:hidden;display:flex;flex-direction:column;}
   .layout{display:flex;width:100%;flex:1 1 auto;min-height:0;}
-  .app-titlebar{display:flex;align-items:center;justify-content:center;height:38px;flex-shrink:0;background:var(--sidebar);border-bottom:1px solid var(--border);padding:0 12px;padding-top:env(safe-area-inset-top,0);padding-left:max(12px,env(safe-area-inset-left,0));padding-right:max(12px,env(safe-area-inset-right,0));box-sizing:content-box;font-size:12px;color:var(--muted);user-select:none;-webkit-app-region:drag;position:relative;z-index:20;}
+  .app-titlebar{display:flex;align-items:center;justify-content:center;height:38px;flex-shrink:0;background:var(--sidebar);border-bottom:1px solid var(--border);padding:0 12px;padding-top:var(--app-titlebar-safe-top);padding-left:max(12px,env(safe-area-inset-left,0));padding-right:max(12px,env(safe-area-inset-right,0));box-sizing:content-box;font-size:12px;color:var(--muted);user-select:none;-webkit-app-region:drag;position:relative;z-index:20;}
   .app-titlebar-inner{display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;justify-content:center;}
   .app-titlebar-icon{display:inline-flex;align-items:center;color:var(--accent);}
   .app-titlebar-title{font-size:12px;font-weight:600;color:var(--text);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw;}
@@ -887,6 +893,34 @@
   .composer-model-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .composer-model-icon,.composer-model-chevron{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;line-height:1;}
   .composer-model-select{position:absolute!important;left:-9999px!important;width:1px!important;height:1px!important;opacity:0!important;pointer-events:none!important;}
+  /* Increased specificity (.icon-btn.composer-mobile-config-btn) to win the cascade
+     against the later-in-source `.icon-btn { display:flex }` rule that this element
+     also matches. Without this, the button shows at desktop width — see #1381 review. */
+  .icon-btn.composer-mobile-config-btn{display:none;}
+  .composer-mobile-config-btn.active{background:var(--accent-bg);border-color:var(--accent-bg-strong);color:var(--text);opacity:1;}
+  .composer-mobile-ctx-badge{position:absolute;right:2px;bottom:2px;display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 3px;border-radius:999px;background:var(--surface);border:1px solid var(--border2);color:var(--muted);font-size:8px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;box-shadow:0 1px 4px rgba(0,0,0,.28);pointer-events:none;}
+  .composer-mobile-ctx-badge.ctx-mid{color:var(--warning);border-color:var(--warning);}
+  .composer-mobile-ctx-badge.ctx-high{color:var(--error);border-color:var(--error);}
+  .composer-mobile-config-panel{display:none;position:absolute;left:8px;right:8px;bottom:calc(100% + 6px);z-index:180;padding:8px;gap:8px;align-items:stretch;justify-content:flex-start;flex-wrap:wrap;background:var(--surface);border:1px solid var(--border2);border-radius:12px;box-shadow:0 -6px 28px rgba(0,0,0,.35);overflow:visible;}
+  .composer-mobile-config-action{box-sizing:border-box;display:inline-flex;align-items:center;gap:10px;min-width:0;min-height:44px;padding:8px 10px;border-radius:10px;border:1px solid transparent;background:transparent;color:var(--muted);font:inherit;text-align:left;cursor:pointer;overflow:hidden;}
+  .composer-mobile-config-action.active{background:var(--accent-bg);border-color:var(--accent-bg-strong);color:var(--text);}
+  .composer-mobile-config-copy{display:flex;flex-direction:column;gap:1px;min-width:0;line-height:1.2;}
+  /* The kicker labels (WORKSPACE / MODEL / REASONING / CONTEXT) duplicate the
+     meaning the row icon already conveys, and at iPhone 14 width (390px) the
+     ~60px copy column truncates them. Hide them inside the open panel — the
+     icon + value gives a cleaner two-row layout per pill. The .context row
+     keeps its kicker because it stretches to 100% width and has more value
+     content (usage / tokens / threshold). See #1381 review feedback. */
+  .composer-mobile-config-action:not(.composer-mobile-context-action) .composer-mobile-config-kicker{display:none;}
+  .composer-mobile-config-kicker{font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);}
+  .composer-mobile-config-value{font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .composer-mobile-context-action{flex:1 0 100%;align-items:flex-start;cursor:default;overflow:visible;}
+  .composer-mobile-context-copy{flex:1 1 auto;gap:2px;}
+  .composer-mobile-context-detail{font-size:11px;color:var(--muted);white-space:normal;line-height:1.25;}
+  .composer-mobile-context-compress{flex:0 0 auto;width:auto;max-width:128px;align-self:center;text-align:center;white-space:normal;}
+  .composer-mobile-context-action.ctx-mid .composer-mobile-config-value{color:var(--warning);}
+  .composer-mobile-context-action.ctx-high .composer-mobile-config-value{color:var(--error);}
+  .composer-mobile-context-action.ctx-high .composer-mobile-context-compress{border-color:var(--error);color:var(--error);}
   .composer-right{display:flex;gap:8px;align-items:center;flex-shrink:0;}
   .composer-status{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;}
   /* Context usage indicator */
@@ -1079,7 +1113,6 @@
        The left sidebar + panel layout can consume width before right panel opens, so this
        must be container-driven and independent of panel state. */
     .composer-workspace-label,
-    .composer-workspace-chevron,
     #composerWorkspaceLabel,
     .composer-model-label,
     .composer-model-chevron,
@@ -1093,7 +1126,12 @@
   }
 
   @container composer-footer (max-width: 520px){
-    /* Stage 2: full icon-only for tighter widths. */
+    /* Stage 2: full icon-only for tighter widths. Container-width compaction is needed
+       when side panels narrow the composer even though the viewport is not a phone. */
+    .composer-left{gap:10px;overflow-x:auto;overflow-y:hidden;}
+    .composer-left > *{flex-shrink:0;}
+    .composer-profile-wrap,
+    .composer-ws-wrap{flex:0 0 auto;}
     .composer-profile-label,
     .composer-workspace-label,
     .composer-model-label,
@@ -1109,16 +1147,23 @@
 
     .composer-profile-chip,
     .composer-model-chip,
-    .composer-reasoning-chip,
-    .composer-workspace-chip{max-width:44px;min-width:44px;min-height:44px;padding:6px;justify-content:center;gap:0;font-size:11px;}
+    .composer-reasoning-chip{box-sizing:border-box;width:44px;height:44px;max-width:44px;min-width:44px;min-height:44px;padding:0;justify-content:center;gap:0;font-size:11px;}
 
-    .composer-workspace-group{min-height:44px;}
-    .composer-workspace-files-btn{min-width:44px;padding:6px 8px;}
-    .composer-workspace-chip{min-width:44px;max-width:44px;padding:6px 8px;gap:0;}
+    .composer-workspace-group{box-sizing:border-box;flex:0 0 44px;width:44px;min-width:44px;max-width:44px;min-height:44px;overflow:hidden;border:none;background:transparent;border-radius:8px;}
+    .composer-workspace-files-btn{box-sizing:border-box;width:44px;min-width:44px;max-width:44px;padding:0;border-radius:8px;}
+    .composer-workspace-chip{display:none!important;}
+    .composer-left > .composer-model-wrap,
+    .composer-left > .composer-reasoning-wrap{display:none!important;}
+    .composer-mobile-config-btn{box-sizing:border-box;position:relative;display:inline-flex!important;width:44px;height:44px;min-width:44px;min-height:44px;flex-shrink:0;}
+    .composer-mobile-config-panel.open{display:flex;}
+    .composer-mobile-config-action{flex:1 1 0;min-height:44px;min-width:0;background:var(--input-bg);border-color:var(--border);}
+    .composer-mobile-context-action{flex:1 0 100%;}
     .composer-divider{display:none;}
   }
 
   @media(max-width:640px){
+    /* Viewport-phone rules handle app chrome and touch sizing; they intentionally
+       overlap the container compact rules for actual phones. */
     /* ── Sidebar: slide-in overlay instead of hidden ── */
     .sidebar{position:fixed;left:-300px;top:0;bottom:0;width:280px;z-index:200;
       transition:left .25s ease;}
@@ -1156,7 +1201,13 @@
     .composer-wrap{padding:8px 10px 12px!important;}
     .composer-box{border-radius:12px;}
     .composer-box textarea{min-height:40px;}
-    .composer-footer{padding:6px 8px 8px!important;gap:8px;}
+    .composer-footer{padding:6px 8px 8px!important;gap:6px;flex-wrap:nowrap;align-items:center;}
+    .composer-left{flex:1 1 auto;width:auto;flex-wrap:nowrap;align-items:center;gap:10px;overflow-x:auto;overflow-y:hidden;max-height:none;row-gap:0;-webkit-overflow-scrolling:touch;}
+    .composer-left > *{flex-shrink:0;}
+    .composer-profile-wrap,
+    .composer-ws-wrap{flex:0 0 auto;}
+    .composer-right{flex:0 0 auto;width:auto;justify-content:flex-end;gap:6px;min-width:0;}
+    /* icon-only composer chips below 640px */
     .composer-profile-label,
     .composer-workspace-label,
     .composer-model-label,
@@ -1171,15 +1222,22 @@
     #composerReasoningLabel{display:none;}
     .composer-profile-chip,
     .composer-model-chip,
-    .composer-reasoning-chip{max-width:44px;min-width:44px;min-height:44px;padding:6px;justify-content:center;gap:0;font-size:11px;}
-    .composer-workspace-group{min-height:44px;}
-    .composer-workspace-files-btn{min-width:44px;padding:6px 8px;}
-    .composer-workspace-chip{min-width:44px;max-width:44px;padding:6px 8px;gap:0;}
+    .composer-reasoning-chip{box-sizing:border-box;width:44px;height:44px;max-width:44px;min-width:44px;min-height:44px;padding:0;justify-content:center;gap:0;font-size:11px;}
+    .composer-workspace-group{box-sizing:border-box;flex:0 0 44px;width:44px;min-width:44px;max-width:44px;min-height:44px;overflow:hidden;border:none;background:transparent;border-radius:8px;}
+    .composer-workspace-files-btn{box-sizing:border-box;width:44px;min-width:44px;max-width:44px;padding:0;border-radius:8px;}
+    .composer-workspace-chip{display:none!important;}
+    .composer-left > .composer-model-wrap,
+    .composer-left > .composer-reasoning-wrap{display:none!important;}
+    .composer-mobile-config-btn{box-sizing:border-box;position:relative;display:inline-flex!important;width:44px;height:44px;min-width:44px;min-height:44px;flex-shrink:0;}
+    .composer-mobile-config-panel.open{display:flex;}
+    .composer-mobile-config-action{box-sizing:border-box;flex:1 1 0;min-height:44px;min-width:0;background:var(--input-bg);border-color:var(--border);}
+    .composer-mobile-context-action{flex:1 0 100%;}
     /* icon-only composer chips continue below mobile widths */
     .composer-divider{display:none;}
-    .composer-status{max-width:96px;font-size:10px;}
-    .send-btn{width:32px;height:32px;}
-    .ctx-indicator{width:32px;height:32px;}
+    .composer-status{flex:0 1 auto;min-width:0;max-width:96px;font-size:10px;text-align:right;}
+    .send-btn{width:44px;height:44px;}
+    .ctx-indicator-wrap{display:none!important;}
+    .ctx-indicator{width:44px;height:44px;}
     .ctx-tooltip{right:-4px;min-width:190px;max-width:220px;}
     .composer-terminal-panel{width:calc(100% - 20px);}
     .composer-terminal-panel.is-collapsed{bottom:-1px;width:calc(100% - 28px);}
@@ -1202,6 +1260,20 @@
     .empty-state p{font-size:13px;}
     .suggestion-grid{max-width:100%!important;}
     .suggestion{font-size:12px;padding:10px 12px;}
+  }
+
+  @media (max-width: 340px){
+    /* Extreme legacy-phone widths (e.g. 320px) cannot fit five 44px
+       left-side touch targets plus the fixed send button with the normal
+       phone spacing. Keep the single-row hierarchy and 44px targets, but
+       tighten only the inter-button gutters so the config button remains
+       fully visible instead of sliding under the send button. */
+    .composer-wrap{padding-left:8px!important;padding-right:8px!important;}
+    .composer-footer{gap:4px;}
+    .composer-left{gap:2px;}
+  }
+
+  @media (max-width: 640px){
     /* Approval card */
     .approval-card{padding-left:10px;padding-right:10px;}
     .approval-btns{gap:6px;}

@@ -1702,6 +1702,81 @@ def handle_post(handler, parsed) -> bool:
             handler, {"ok": True, "session": s.compact() | {"messages": s.messages}}
         )
 
+    if parsed.path == "/api/session/branch":
+        # Fork a conversation from any message point (#465).
+        # Accepts: {session_id, keep_count?, title?}
+        #   keep_count: number of messages to copy (0=empty, undefined=full history)
+        #   title: custom title (defaults to "<original title> (fork)")
+        try:
+            require(body, "session_id")
+        except ValueError as e:
+            return bad(handler, str(e))
+        # Reject non-string session_id explicitly so the failure surfaces as a
+        # 400 instead of a generic 500 from get_session() raising TypeError.
+        # (Opus pre-release follow-up.)
+        if not isinstance(body["session_id"], str):
+            return bad(handler, "session_id must be a string")
+        try:
+            source = get_session(body["session_id"])
+        except KeyError:
+            return bad(handler, "Session not found", 404)
+
+        keep_count = body.get("keep_count")
+        if keep_count is not None:
+            try:
+                keep_count = int(keep_count)
+            except (ValueError, TypeError):
+                return bad(handler, "keep_count must be an integer")
+            # Negative slice (`messages[:-N]`) returns "all but last N", which
+            # is a confusing fork semantic. Reject explicitly so the user
+            # doesn't accidentally fork a session with the tail truncated when
+            # they meant to copy the prefix. (Opus pre-release follow-up.)
+            if keep_count < 0:
+                return bad(handler, "keep_count must be non-negative")
+
+        custom_title = body.get("title")
+        if custom_title:
+            custom_title = str(custom_title).strip()[:80] or None
+
+        # Build messages slice
+        source_messages = source.messages or []
+        if keep_count is not None:
+            forked_messages = source_messages[:keep_count]
+        else:
+            forked_messages = list(source_messages)
+
+        # Derive title
+        if custom_title:
+            branch_title = custom_title
+        else:
+            source_title = source.title or "Untitled"
+            branch_title = f"{source_title} (fork)"
+
+        # Create new session inheriting workspace/model/profile
+        branch = Session(
+            workspace=source.workspace,
+            model=source.model,
+            profile=getattr(source, "profile", None),
+            title=branch_title,
+            messages=forked_messages,
+            parent_session_id=source.session_id,
+        )
+        with LOCK:
+            SESSIONS[branch.session_id] = branch
+            SESSIONS.move_to_end(branch.session_id)
+            while len(SESSIONS) > SESSIONS_MAX:
+                SESSIONS.popitem(last=False)
+
+        # Persist only if there are messages (matches new_session pattern)
+        if forked_messages:
+            branch.save()
+
+        return j(handler, {
+            "session_id": branch.session_id,
+            "title": branch_title,
+            "parent_session_id": source.session_id,
+        })
+
     if parsed.path == "/api/session/compress":
         return _handle_session_compress(handler, body)
 

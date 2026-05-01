@@ -614,6 +614,12 @@ _PROVIDER_ALIASES = {
     "nvidia-nim": "nvidia",
     "build-nvidia": "nvidia",
     "nemotron": "nvidia",
+    # Legacy alias — earlier WebUI builds wrote ``provider: local`` for unknown
+    # loopback endpoints, but ``local`` is not registered in
+    # ``hermes_cli.auth.PROVIDER_REGISTRY``. Routing it through ``custom``
+    # lets the agent's auxiliary client take the ``no-key-required``
+    # OpenAI-compat path. See #1384.
+    "local": "custom",
 }
 
 
@@ -971,6 +977,16 @@ def resolve_model_provider(model_id: str) -> tuple:
         config_provider = model_cfg.get("provider")
         config_base_url = model_cfg.get("base_url")
 
+    # Heal legacy ``provider: local`` entries (written by WebUI < v0.50.252)
+    # at read time. ``local`` is not a registered provider, so passing it
+    # downstream raises a ``LOCAL_API_KEY`` error from the auxiliary client
+    # mid-conversation when compression/vision/web-extract fires. Route
+    # through ``custom`` instead — it takes the ``no-key-required``
+    # OpenAI-compat path that local servers (Ollama, LM Studio, llama.cpp,
+    # vLLM, TabbyAPI) actually use. See #1384.
+    if isinstance(config_provider, str) and config_provider.strip().lower() == "local":
+        config_provider = "custom"
+
     model_id = (model_id or "").strip()
     if not model_id:
         return model_id, config_provider, config_base_url
@@ -1185,6 +1201,13 @@ def set_hermes_default_model(model_id: str) -> dict:
         # matcher — see `static/panels.js` (#895).
         persisted_model = str(resolved_model or selected_model).strip()
         persisted_provider = str(resolved_provider or previous_provider or "").strip()
+        # Never persist the bogus ``local`` value — see #1384. The auto-detect
+        # block in ``_build_available_models_uncached`` was rewriting unknown
+        # loopback hosts to ``provider: "local"``, which is not registered and
+        # broke compression/vision mid-conversation. Route through ``custom``
+        # so the agent's auxiliary client uses the ``no-key-required`` path.
+        if persisted_provider.lower() == "local":
+            persisted_provider = "custom"
 
         model_cfg["default"] = persisted_model
         if persisted_provider:
@@ -1745,7 +1768,16 @@ def get_available_models() -> dict:
                             elif "lmstudio" in host or "lm-studio" in host:
                                 provider = "lmstudio"
                             else:
-                                provider = "local"
+                                # Unknown loopback/private endpoint: route through
+                                # the generic ``custom`` provider so the agent's
+                                # auxiliary client (compression, vision, web
+                                # extraction) takes the OpenAI-compat custom path
+                                # with ``no-key-required`` semantics. Writing
+                                # ``provider: local`` here used to break
+                                # compression mid-conversation because ``local``
+                                # is not a registered provider in
+                                # ``hermes_cli.auth.PROVIDER_REGISTRY`` — see #1384.
+                                provider = "custom"
                     except ValueError:
                         pass
 
