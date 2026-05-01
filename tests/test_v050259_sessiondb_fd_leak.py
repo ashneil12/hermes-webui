@@ -20,6 +20,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -96,10 +98,18 @@ def test_lru_eviction_closes_evicted_agent_session_db():
 def test_session_db_close_is_idempotent():
     """`SessionDB.close()` must be safe to call multiple times. The fix
     relies on this — if a future code path closes the same `_session_db`
-    after we've swapped it, the second close is a benign no-op."""
-    import sys
-    sys.path.insert(0, "/home/hermes/.hermes/hermes-agent")
-    from hermes_state import SessionDB
+    after we've swapped it, the second close is a benign no-op.
+
+    Skipped when hermes_state is not on the import path (e.g. on the GH
+    Actions runner that only has the WebUI repo, not the agent repo).
+    The source-level pin in test_cached_agent_reuse_closes_old_session_db
+    catches revert of the close() call; this test only adds runtime
+    confirmation when both repos are co-located.
+    """
+    import importlib.util
+    if importlib.util.find_spec("hermes_state") is None:
+        pytest.skip("hermes_state not on import path (CI-only — agent repo not present)")
+    from hermes_state import SessionDB  # type: ignore
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmpd:
