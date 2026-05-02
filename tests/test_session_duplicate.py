@@ -98,7 +98,7 @@ def test_duplicate_creates_independent_session():
 
     # Extract the duplicate endpoint code (next few lines)
     lines = content[duplicate_start:].split('\n')
-    endpoint_code = '\n'.join(lines[:30])
+    endpoint_code = '\n'.join(lines[:80])
 
     # Verify that parent_session_id is NOT passed to Session constructor
     assert 'parent_session_id' not in endpoint_code, \
@@ -127,10 +127,13 @@ def test_duplicate_session_copies_title_logic():
     assert duplicate_start != -1, "Duplicate endpoint not found"
 
     lines = content[duplicate_start:].split('\n')
-    endpoint_code = '\n'.join(lines[:30])
+    endpoint_code = '\n'.join(lines[:80])
 
-    # Verify title includes (copy)
+    # Verify title includes (copy). Accept the original `session.title + " (copy)"`
+    # form OR the May 2 2026 SF-3 hardened form `(session.title or "Untitled") + " (copy)"`
+    # which guards against legacy null titles.
     assert 'session.title + " (copy)"' in endpoint_code or \
+           '(session.title or "Untitled") + " (copy)"' in endpoint_code or \
            'session.title + \' (copy\')' in endpoint_code or \
            'title=session.title + " (copy)"' in endpoint_code, \
         f"Title should include '(copy)' suffix. Got: {endpoint_code}"
@@ -147,7 +150,7 @@ def test_duplicate_session_copies_messages_logic():
     assert duplicate_start != -1, "Duplicate endpoint not found"
 
     lines = content[duplicate_start:].split('\n')
-    endpoint_code = '\n'.join(lines[:30])
+    endpoint_code = '\n'.join(lines[:80])
 
     # Verify messages are copied from original session.  Accept either the
     # plain assignment (insufficient — see test_duplicate_runtime_messages_independence)
@@ -168,7 +171,7 @@ def test_duplicate_session_copies_model_logic():
     assert duplicate_start != -1, "Duplicate endpoint not found"
 
     lines = content[duplicate_start:].split('\n')
-    endpoint_code = '\n'.join(lines[:30])
+    endpoint_code = '\n'.join(lines[:80])
 
     # Verify model is copied
     assert 'model=session.model' in endpoint_code, \
@@ -186,7 +189,7 @@ def test_duplicate_session_copies_workspace_logic():
     assert duplicate_start != -1, "Duplicate endpoint not found"
 
     lines = content[duplicate_start:].split('\n')
-    endpoint_code = '\n'.join(lines[:30])
+    endpoint_code = '\n'.join(lines[:80])
 
     # Verify workspace is copied
     assert 'workspace=session.workspace' in endpoint_code, \
@@ -204,19 +207,20 @@ def test_duplicate_session_copies_all_session_properties():
     assert duplicate_start != -1, "Duplicate endpoint not found"
 
     lines = content[duplicate_start:].split('\n')
-    endpoint_code = '\n'.join(lines[:30])
+    endpoint_code = '\n'.join(lines[:80])
 
     # Extract the copied_session = Session( lines
     session_construction_start = endpoint_code.find('copied_session = Session(')
     assert session_construction_start != -1, "Should construct copied_session"
 
     # Get the construction block
-    construction_block = endpoint_code[session_construction_start:session_construction_start+800]
+    construction_block = endpoint_code[session_construction_start:session_construction_start+1600]
 
     # Verify all key properties are copied
+    # `title` accepts either the original `title=session.title` or the
+    # SF-3 hardened form `title=(session.title or "Untitled")` (May 2 2026).
     properties_to_check = [
         'session_id=uuid.uuid4',  # New unique ID
-        'title=session.title',     # Title (will be modified to add (copy))
         'workspace=session.workspace',
         'model=session.model',
         'model_provider=session.model_provider',
@@ -225,6 +229,10 @@ def test_duplicate_session_copies_all_session_properties():
     for prop in properties_to_check:
         assert prop in construction_block, \
             f"Property should be copied: {prop}. Got: {construction_block[:300]}"
+
+    assert 'title=session.title' in construction_block or \
+           'title=(session.title or "Untitled")' in construction_block, \
+        f"title must be copied (plain or guarded form). Got: {construction_block[:300]}"
 
     # `messages` accepts either the plain assignment or the deepcopy form (May 2 2026 fix).
     assert 'messages=session.messages' in construction_block or \
@@ -249,7 +257,7 @@ def test_duplicate_uses_deepcopy_for_messages():
     duplicate_start = content.find('if parsed.path == "/api/session/duplicate":')
     assert duplicate_start != -1, "Duplicate endpoint not found"
     lines = content[duplicate_start:].split('\n')
-    endpoint_code = '\n'.join(lines[:50])
+    endpoint_code = '\n'.join(lines[:80])
     assert 'copy.deepcopy(session.messages)' in endpoint_code, \
         "duplicate must use copy.deepcopy(session.messages) — plain assignment shares list refs"
     assert 'copy.deepcopy(session.tool_calls)' in endpoint_code, \
@@ -269,7 +277,7 @@ def test_duplicate_explicitly_persists_to_disk():
     duplicate_start = content.find('if parsed.path == "/api/session/duplicate":')
     assert duplicate_start != -1, "Duplicate endpoint not found"
     lines = content[duplicate_start:].split('\n')
-    endpoint_code = '\n'.join(lines[:50])
+    endpoint_code = '\n'.join(lines[:80])
     assert 'copied_session.save()' in endpoint_code, \
         "duplicate must call .save() explicitly — without it the copy vanishes on refresh"
 
@@ -286,7 +294,7 @@ def test_duplicate_resets_pinned_and_archived():
     duplicate_start = content.find('if parsed.path == "/api/session/duplicate":')
     assert duplicate_start != -1, "Duplicate endpoint not found"
     lines = content[duplicate_start:].split('\n')
-    endpoint_code = '\n'.join(lines[:50])
+    endpoint_code = '\n'.join(lines[:80])
     # Both must be hard-coded to False, NOT inherited from `session.pinned`/`session.archived`
     assert 'pinned=False' in endpoint_code, \
         "duplicate must reset pinned=False — duplicating shouldn't propagate pin state"
@@ -310,7 +318,7 @@ def test_duplicate_returns_404_when_session_not_found():
     duplicate_start = content.find('if parsed.path == "/api/session/duplicate":')
     assert duplicate_start != -1, "Duplicate endpoint not found"
     lines = content[duplicate_start:].split('\n')
-    endpoint_code = '\n'.join(lines[:50])
+    endpoint_code = '\n'.join(lines[:80])
     assert 'bad(handler, "Session not found", status=404)' in endpoint_code, \
         "missing session must return status=404, not the default 400"
 

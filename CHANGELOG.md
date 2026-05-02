@@ -1,5 +1,25 @@
 # Hermes Web UI -- Changelog
 
+## [v0.50.268] — 2026-05-02
+
+### Fixed (contributor PR batch — 4 PRs)
+
+- **Sync URL after session id rotation** (#1395, by @dso2ng) — adds calls to `_setActiveSessionUrl(...)` at two points in `static/messages.js` where a session_id rotation can land (stream completion + settled session restore), so the tab URL and `localStorage['hermes-webui-session']` track the rotated id. Production-safe via `typeof _setActiveSessionUrl === 'function'` guard. Follow-up to #1392 which shipped in v0.50.254.
+- **Nest delegated child sessions under collapsed lineage roots** (#1450, by @dso2ng) — when a delegated child session's parent was a hidden compression segment inside a collapsed lineage, the child fell through as a standalone `Cli Session` row with the wrong indentation. Now `_attachChildSessionsToSidebarRows()` looks up the visible collapsed lineage root and attaches child sessions there, preserving the compact lineage row while still showing children under it. (`api/agent_sessions.py`, `api/models.py`, `static/sessions.js`, `static/style.css`, `tests/test_session_lineage_collapse.py`, `tests/test_session_lineage_metadata_api.py`)
+- **`/api/session/duplicate` endpoint** (#1462, by @AlexeyDsov) — new server-side endpoint creates an independent session copy with all messages, model, workspace, and per-session settings intact. Replaces the prior client-side `new + rename` dance which was non-atomic and could leave half-baked "(copy)" sessions if the rename call failed. Plus 5 maintainer review-feedback fixes applied directly to the contributor's branch (`copy.deepcopy()` for messages and tool_calls so duplicates are actually independent, explicit `.save()` so duplicates persist immediately, `pinned/archived=False` so duplicates of archived sessions are visible, status=404 for missing session, removed redundant local imports). Plus 3 Opus advisor SHOULD-FIX follow-ups: carry `personality` / `enabled_toolsets` / `context_length` / `threshold_tokens` so per-session customizations transfer; guard `(session.title or "Untitled") + " (copy)"` so legacy sessions with `title=null` don't `TypeError`. (`api/routes.py`, `static/sessions.js`, `tests/test_session_duplicate.py`, `tests/test_stage268_opus_followups.py`)
+- **Android PWA app installation** (#1476, by @galvani) — adds 192px and 512px PNG icons (one with `purpose: "any maskable"` for adaptive icons), updates `static/manifest.json`, switches `apple-touch-icon` to PNG for iOS compatibility, and whitelists `/manifest.json` + `/manifest.webmanifest` in `api/auth.py` `PUBLIC_PATHS` so the install prompt works regardless of auth state. (`api/auth.py`, `static/apple-touch-icon.png`, `static/favicon-192.png`, `static/favicon-512.png`, `static/favicon-512.svg`, `static/index.html`, `static/manifest.json`)
+
+### Fixed (Opus pre-release follow-up: i18n)
+
+- **Child-count UI was hardcoded English** (#1450 follow-up) — the sidebar child-count badge and meta-line both rendered `${childCount} child${childCount===1?'':'ren'}` as a literal English string, breaking 8 of the 9 supported locales. Added `session_meta_children` arrow-function key to all 10 locale blocks (`en`, `ja`, `ru`, `es`, `de`, `zh`, `zh-Hant` x2, `pt`, `ko`) using locale-appropriate phrasing, and replaced both callsites in `static/sessions.js` with `t('session_meta_children', childCount)`. 6 regression tests in `tests/test_stage268_opus_followups.py` pin the i18n key presence + the absence of hardcoded strings.
+
+### Maintainer-applied auto-rebase + auto-fix
+
+This release is the first under the May 2 2026 auto-rebase + auto-fix policy: contributor PRs that are otherwise merge-ready but have mechanical blockers (CONFLICTING with master, small review nits) get rebased + fixed by maintainer + force-pushed back to the contributor's branch, rather than waiting for the contributor to round-trip. Two PRs in this batch followed that path:
+
+- **#1462** — 5 review-feedback fixes applied directly (deepcopy independence, persist on duplicate, reset pinned/archived, 404 status, import cleanup). `Co-authored-by: Alexey Dsov` trailer preserves attribution.
+- **#1353** (NOT in this release — deferred to v0.50.269 due to scale + durability path requiring independent review) — rebased onto master, resolved 7 conflicts across 2 files, skipped 2 commits per the contributor's own commit message intent, force-pushed back. Now MERGEABLE for the next batch.
+
 ## [v0.50.267] — 2026-05-02
 
 ### Fixed (contributor PR batch — 7 PRs)

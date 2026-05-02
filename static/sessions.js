@@ -1639,7 +1639,7 @@ function renderSessionListFromCache(){
     if(childCount>0){
       const childCountEl=document.createElement('span');
       childCountEl.className='session-child-count';
-      const childLabel=`${childCount} child${childCount===1?'':'ren'}`;
+      const childLabel=t('session_meta_children', childCount);
       childCountEl.textContent=childLabel;
       childCountEl.title=childLabel;
       ['pointerdown','pointerup','click'].forEach(ev=>childCountEl.addEventListener(ev,e=>e.stopPropagation()));
@@ -1677,7 +1677,7 @@ function renderSessionListFromCache(){
         ? t('session_meta_messages', msgCount)
         : `${msgCount} msg${msgCount===1?'':'s'}`;
       metaBits.push(msgLabel);
-      if(childCount>0) metaBits.push(`${childCount} child${childCount===1?'':'ren'}`);
+      if(childCount>0) metaBits.push(t('session_meta_children', childCount));
       if(s.model) metaBits.push(s.model);
       if(_showAllProfiles&&s.profile) metaBits.push(s.profile);
       const meta=document.createElement('div');

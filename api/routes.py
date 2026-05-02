@@ -1855,7 +1855,9 @@ def handle_post(handler, parsed) -> bool:
             # content arrays), so a shallow `list(...)` is not enough.
             copied_session = Session(
                 session_id=uuid.uuid4().hex[:12],
-                title=session.title + " (copy)",
+                # Defensive: legacy sessions may have title=None on disk; fall back to 'Untitled'
+                # so `+ " (copy)"` doesn't TypeError.
+                title=(session.title or "Untitled") + " (copy)",
                 workspace=session.workspace,
                 model=session.model,
                 model_provider=session.model_provider,
@@ -1871,6 +1873,14 @@ def handle_post(handler, parsed) -> bool:
                 input_tokens=session.input_tokens,
                 output_tokens=session.output_tokens,
                 estimated_cost=session.estimated_cost,
+                # Per-session settings the user may have customized — carry them over
+                # so the duplicate behaves identically until further edits. Compression
+                # anchor + last_prompt_tokens are intentionally NOT carried — those
+                # re-derive on the next turn.
+                personality=session.personality,
+                enabled_toolsets=getattr(session, "enabled_toolsets", None),
+                context_length=getattr(session, "context_length", None),
+                threshold_tokens=getattr(session, "threshold_tokens", None),
                 created_at=time.time(),
                 updated_at=time.time(),
             )
