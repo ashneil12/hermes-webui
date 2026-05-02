@@ -164,6 +164,45 @@ def test_missing_stream_returns_404(sidecar_server):
     assert exc.value.code == 404
 
 
+def test_pretouched_empty_stream_returns_200_and_tails(sidecar_server):
+    """A pre-touched empty JSONL file must produce 200 SSE, not 404.
+
+    `_handle_chat_start` in api/routes.py touches the per-stream JSONL
+    synchronously before returning the stream_id, so the browser's SW
+    can fire the events GET sub-second later without losing the race
+    against the agent thread's first put(). This test pins that the
+    sidecar serves an empty file the same way it serves a populated
+    one — opening the SSE connection and tailing for events. Without
+    the pre-touch, the browser would see the historical 404 "stream
+    not found" race that this whole change is designed to eliminate.
+    """
+    base, chat_jobs = sidecar_server
+    sid = "pretouch01"
+
+    # Producer-side pre-touch: same shape as the chat-start change.
+    (chat_jobs / f"{sid}.jsonl").touch()
+
+    # Append one event from a background thread *after* the GET is
+    # already in flight, mimicking the real agent-thread timing.
+    def _append_after_delay() -> None:
+        time.sleep(0.1)
+        append_event_atomic(chat_jobs, sid, "done", {}, seq=0)
+
+    appender = threading.Thread(target=_append_after_delay, daemon=True)
+    appender.start()
+
+    with urllib.request.urlopen(
+        base + f"/chat-jobs/{sid}/events?cursor=0",
+        timeout=3,
+    ) as r:
+        assert r.status == 200
+        assert "text/event-stream" in r.headers.get("Content-Type", "")
+        events = _parse_sse_stream(r.read())
+
+    appender.join(timeout=2.0)
+    assert [e["event"] for e in events] == ["done"]
+
+
 def test_cursor_past_eof_returns_416(sidecar_server):
     base, chat_jobs = sidecar_server
     sid = "fixt001"

@@ -2929,6 +2929,27 @@ def _handle_chat_start(handler, body):
         # Stale stream id from a previous run; clear and continue.
         s.active_stream_id = None
     stream_id = uuid.uuid4().hex
+    # Pre-create the chat-jobs JSONL file so the sidecar's GET
+    # /chat-jobs/<stream_id>/events returns 200 immediately instead of
+    # racing the producer thread's first put() call. Without this, a
+    # browser SW that fires the events GET sub-second after chat-start
+    # returns gets a 404 ("stream not found") because streaming.put()
+    # writes the first line asynchronously from the agent thread —
+    # typically 1-2s later, but loaded VMs can stretch past 3s. The
+    # sidecar's tail loop happily polls an empty file until the
+    # producer appends; pre-touch is enough to flip the race.
+    #
+    # Best-effort: a failure to create the file should not block the
+    # chat-start response — the existing client-side retry already
+    # handles a true race, this just narrows the window.
+    try:
+        from api.config import CHAT_JOBS_DIR as _CHAT_JOBS_DIR
+        from sidecar.log_reader import log_path as _log_path
+        _jsonl_path = _log_path(_CHAT_JOBS_DIR, stream_id)
+        _jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+        _jsonl_path.touch(exist_ok=True)
+    except Exception:
+        logger.debug("chat-jobs JSONL pre-touch failed", exc_info=True)
     with _get_session_agent_lock(s.session_id):
         s.workspace = workspace
         s.model = model
