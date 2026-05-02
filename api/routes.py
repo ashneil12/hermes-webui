@@ -1200,6 +1200,76 @@ def handle_get(handler, parsed) -> bool:
             },
         )
 
+    # Synthetic egress probe — proves the agent's network can reach
+    # specified upstream hosts (model APIs). Polled by the dashboard's
+    # /api/cron/probe-instance-egress every 5 min so an outbound DNS or
+    # network filter outage surfaces in /dashboard/ops before any user
+    # hits "stream not found." Bearer-auth protected via the standard
+    # check above this handler — never exposed unauth'd.
+    #
+    # Wire format (in: query string, out: JSON):
+    #   GET /api/health/egress?targets=api.openai.com,api.anthropic.com
+    #   {"targets": [
+    #      {"target": "api.openai.com", "ok": true, "durationMs": 12},
+    #      {"target": "api.anthropic.com", "ok": false,
+    #       "errorClass": "gaierror", "errorDetail": "Name or service not known"}
+    #   ]}
+    #
+    # Each probe is DNS resolution + TCP connect to port 443. We don't
+    # do an HTTPS handshake to keep the probe cheap and to avoid hitting
+    # the upstream's auth/rate-limit layers — connection is enough to
+    # prove the path is open.
+    if parsed.path == "/api/health/egress":
+        import socket as _socket
+        from urllib.parse import parse_qs as _parse_qs
+        qs = _parse_qs(parsed.query or "")
+        raw_targets = (qs.get("targets") or ["api.openai.com,api.anthropic.com"])[0]
+        targets = [t.strip() for t in raw_targets.split(",") if t.strip()][:8]
+        results = []
+        for target in targets:
+            t0 = time.time()
+            try:
+                infos = _socket.getaddrinfo(target, 443, type=_socket.SOCK_STREAM)
+                if not infos:
+                    raise OSError("no addrinfo returned")
+                family, socktype, proto, _, sockaddr = infos[0]
+                s = _socket.socket(family, socktype, proto)
+                s.settimeout(3.0)
+                try:
+                    s.connect(sockaddr)
+                    results.append({
+                        "target": target,
+                        "ok": True,
+                        "durationMs": int((time.time() - t0) * 1000),
+                    })
+                finally:
+                    s.close()
+            except _socket.gaierror as gai:
+                results.append({
+                    "target": target,
+                    "ok": False,
+                    "durationMs": int((time.time() - t0) * 1000),
+                    "errorClass": "gaierror",
+                    "errorDetail": str(gai),
+                })
+            except _socket.timeout:
+                results.append({
+                    "target": target,
+                    "ok": False,
+                    "durationMs": int((time.time() - t0) * 1000),
+                    "errorClass": "timeout",
+                    "errorDetail": "TCP connect timed out after 3s",
+                })
+            except OSError as oe:
+                results.append({
+                    "target": target,
+                    "ok": False,
+                    "durationMs": int((time.time() - t0) * 1000),
+                    "errorClass": type(oe).__name__,
+                    "errorDetail": str(oe),
+                })
+        return j(handler, {"targets": results})
+
     if parsed.path == "/api/models":
         return j(handler, get_available_models())
 

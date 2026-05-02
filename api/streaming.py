@@ -2155,10 +2155,29 @@ def _run_agent_streaming(
                 # an empty final_response without raising — the stream would end with
                 # a done event containing zero assistant messages, leaving the user with
                 # no feedback. Emit an apperror so the client shows an inline error.
-                _assistant_added = any(
-                    m.get('role') == 'assistant' and str(m.get('content') or '').strip()
-                    for m in (result.get('messages') or [])
+                #
+                # Bug fix 2026-05-02: previously this checked `any assistant message
+                # in result.get('messages')` — but for long-running sessions the
+                # result's `messages` field is the FULL conversation history, which
+                # always contains assistant messages from prior turns. The check
+                # was therefore True on every long-session turn even when the
+                # current LLM call produced zero new content, so the silent-failure
+                # branch never fired and the user just saw the chat hang. Compare
+                # against `_previous_messages` so we only count NEW assistant
+                # content from this turn.
+                _prev_assistant_count = sum(
+                    1 for m in (_previous_messages or [])
+                    if isinstance(m, dict)
+                    and m.get('role') == 'assistant'
+                    and str(m.get('content') or '').strip()
                 )
+                _curr_assistant_count = sum(
+                    1 for m in (result.get('messages') or [])
+                    if isinstance(m, dict)
+                    and m.get('role') == 'assistant'
+                    and str(m.get('content') or '').strip()
+                )
+                _assistant_added = _curr_assistant_count > _prev_assistant_count
                 # _token_sent tracks whether on_token() was called (any streamed text)
                 if not _assistant_added and not _token_sent:
                     _last_err = getattr(agent, '_last_error', None) or result.get('error') or ''
@@ -2182,6 +2201,27 @@ def _run_agent_streaming(
                             or 'invalid_api_key' in _err_lower
                         )
                     )
+                    # Connection / DNS / network egress class. Distinct from auth/
+                    # quota because the fix is operator-side (host network), not
+                    # user-side (rotate key, top up). Surfaced to the dashboard
+                    # SW as `code: agent_outbound_unreachable` so the chat banner
+                    # can name the actual cause instead of "stream not found".
+                    _is_connection = (
+                        not _is_quota and not _is_auth and (
+                            'apiconnectionerror' in _err_lower
+                            or 'connection error' in _err_lower
+                            or 'connection refused' in _err_lower
+                            or 'connection reset' in _err_lower
+                            or 'gaierror' in _err_lower
+                            or 'name resolution' in _err_lower
+                            or 'name or service not known' in _err_lower
+                            or 'temporary failure in name resolution' in _err_lower
+                            or 'network is unreachable' in _err_lower
+                            or 'no route to host' in _err_lower
+                            or 'errno -3' in _err_lower
+                            or (_last_err and 'ConnectionError' in type(_last_err).__name__)
+                        )
+                    )
                     if _is_quota:
                         _err_label = 'Out of credits'
                         _err_type = 'quota_exhausted'
@@ -2194,10 +2234,31 @@ def _run_agent_streaming(
                             'your API key is invalid. Run `hermes model` in your terminal to '
                             'update credentials, then restart the WebUI.'
                         )
+                    elif _is_connection:
+                        _err_label = "Couldn't reach model API"
+                        _err_type = 'agent_outbound_unreachable'
+                        _err_hint = (
+                            "The agent's host couldn't reach the model API "
+                            "(network/DNS failure). Operator-side issue — usually "
+                            "transient. Retry in a moment; if it persists, check "
+                            "the agent VM's outbound DNS resolution."
+                        )
                     else:
                         _err_label = 'No response received'
                         _err_type = 'no_response'
                         _err_hint = 'Verify your API key is valid and the selected model is available for your account.'
+                    # Structured error event tee'd to the chat-jobs JSONL — the
+                    # dashboard SW reads `error` events as terminators (see
+                    # SIDECAR_TERMINATOR_EVENTS in dashboard/public/sw.js) and
+                    # surfaces `data.error` to the chat banner. Without this,
+                    # the SW only sees the bare `done` event and falls back to
+                    # the generic "stream not found" message.
+                    put('error', {
+                        'code': _err_type,
+                        'error': f'{_err_label}: {_err_str or _err_label}',
+                        'message': _err_str or f'{_err_label}.',
+                        'hint': _err_hint,
+                    })
                     put('apperror', {
                         'message': _err_str or f'{_err_label}.',
                         'type': _err_type,
@@ -2528,6 +2589,26 @@ def _run_agent_streaming(
             or 'does not match any known model' in _exc_lower
             or 'unknown model' in _exc_lower
         )
+        # See _is_connection in the silent-failure branch above for rationale.
+        # Same set of substring patterns kept in sync.
+        _exc_is_connection = (
+            not _exc_is_quota and not _exc_is_rate_limit and not _exc_is_auth
+            and not _exc_is_not_found and (
+                'apiconnectionerror' in _exc_lower
+                or 'connection error' in _exc_lower
+                or 'connection refused' in _exc_lower
+                or 'connection reset' in _exc_lower
+                or 'gaierror' in _exc_lower
+                or 'name resolution' in _exc_lower
+                or 'name or service not known' in _exc_lower
+                or 'temporary failure in name resolution' in _exc_lower
+                or 'network is unreachable' in _exc_lower
+                or 'no route to host' in _exc_lower
+                or 'errno -3' in _exc_lower
+                or 'APIConnectionError' in type(e).__name__
+                or 'ConnectionError' in type(e).__name__
+            )
+        )
         if _exc_is_quota:
             _exc_label, _exc_type, _exc_hint = (
                 'Out of credits', 'quota_exhausted',
@@ -2549,6 +2630,14 @@ def _run_agent_streaming(
                 'Model not found', 'model_not_found',
                 'The selected model was not found by the provider. '
                 'Check the model ID in Settings or run `hermes model` to verify it exists for your provider.',
+            )
+        elif _exc_is_connection:
+            _exc_label, _exc_type, _exc_hint = (
+                "Couldn't reach model API", 'agent_outbound_unreachable',
+                "The agent's host couldn't reach the model API (network/DNS "
+                "failure). Operator-side issue — usually transient. Retry in a "
+                "moment; if it persists, check the agent VM's outbound DNS "
+                "resolution.",
             )
         else:
             _exc_label, _exc_type, _exc_hint = 'Error', 'error', ''
@@ -2576,6 +2665,15 @@ def _run_agent_streaming(
                     s.save()
                 except Exception:
                     pass
+        # Structured error event tee'd to the chat-jobs JSONL — see the
+        # matching put('error', ...) in the silent-failure branch above for
+        # rationale. The dashboard SW reads `error` events as terminators.
+        put('error', {
+            'code': _exc_type,
+            'error': f'{_exc_label}: {err_str}' if _exc_label != 'Error' else err_str,
+            'message': err_str,
+            'hint': _exc_hint or '',
+        })
         _apperror_payload: dict = {'message': err_str, 'type': _exc_type}
         if _exc_hint:
             _apperror_payload['hint'] = _exc_hint
