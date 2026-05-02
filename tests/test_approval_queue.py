@@ -23,8 +23,8 @@ INDEX_HTML = (REPO_ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
 def test_submit_pending_appends_to_list():
     """submit_pending() must append to a list, not overwrite."""
-    # The new wrapper must contain queue.append
-    assert "queue.append(entry)" in ROUTES_SRC, \
+    # The new wrapper must contain a queue append (list mutation pattern)
+    assert "queue_list.append(entry)" in ROUTES_SRC or "queue.append(entry)" in ROUTES_SRC, \
         "submit_pending() must append entry to a list queue, not overwrite _pending[sid]"
 
 

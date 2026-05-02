@@ -11,6 +11,7 @@ const COMMANDS=[
   {name:'compact',   desc:t('cmd_compact_alias'),       fn:cmdCompact, noEcho:true},
   {name:'model',     desc:t('cmd_model'),  fn:cmdModel,     arg:'model_name', subArgs:'models', noEcho:true},
   {name:'workspace', desc:t('cmd_workspace'),            fn:cmdWorkspace, arg:'name',           noEcho:true},
+  {name:'terminal',  desc:t('cmd_terminal'),             fn:cmdTerminal,                        noEcho:true},
   {name:'new',       desc:t('cmd_new'),            fn:cmdNew,       noEcho:true},
   {name:'usage',     desc:t('cmd_usage'),   fn:cmdUsage,     noEcho:true},
   {name:'theme',     desc:t('cmd_theme'), fn:cmdTheme, arg:'name',  noEcho:true},
@@ -32,6 +33,7 @@ const COMMANDS=[
   {name:'terminal',  desc:'Open the terminal panel', fn:cmdTerminal,  noEcho:true},
   {name:'tts',       desc:'Toggle auto-speak',       fn:cmdTtsToggle, noEcho:true},
   {name:'palette',   desc:'Open the command palette',fn:cmdPalette,   noEcho:true},
+  {name:'branch', desc:t('cmd_branch'), fn:cmdBranch, arg:'[name]', noEcho:true},
 ];
 
 function cmdTerminal(){ if(typeof openTerminal==='function') openTerminal(); else if(typeof showToast==='function') showToast('Terminal not available',2200); }
@@ -95,6 +97,8 @@ let _slashModelCache=null;
 let _slashModelCachePromise=null;
 let _slashPersonalityCache=null;
 let _slashPersonalityCachePromise=null;
+let _agentCommandCache=null;
+let _agentCommandCachePromise=null;
 
 function _normalizeSlashSubArg(value){
   return String(value||'').trim();
@@ -171,6 +175,44 @@ function _getSlashSubArgOptions(spec){
   if(spec==='models') return _loadSlashModelSubArgs();
   if(spec==='personalities') return _loadSlashPersonalitySubArgs();
   return Promise.resolve([]);
+}
+
+async function loadAgentCommandMetadata(force=false){
+  if(_agentCommandCache&&!force) return _agentCommandCache;
+  if(_agentCommandCachePromise&&!force) return _agentCommandCachePromise;
+  _agentCommandCachePromise=(async()=>{
+    try{
+      const data=await api('/api/commands');
+      _agentCommandCache=Array.isArray(data&&data.commands)?data.commands:[];
+    }catch(_){
+      _agentCommandCache=[];
+    }finally{
+      _agentCommandCachePromise=null;
+    }
+    return _agentCommandCache;
+  })();
+  return _agentCommandCachePromise;
+}
+
+async function getAgentCommandMetadata(name){
+  const needle=String(name||'').trim().toLowerCase();
+  if(!needle) return null;
+  const commands=await loadAgentCommandMetadata();
+  return commands.find(cmd=>{
+    if(String(cmd&&cmd.name||'').toLowerCase()===needle) return true;
+    return Array.isArray(cmd&&cmd.aliases)&&cmd.aliases.some(a=>String(a||'').toLowerCase()===needle);
+  })||null;
+}
+
+function cliOnlyCommandResponse(cmdName, meta){
+  const name=String((meta&&meta.name)||cmdName||'').trim();
+  const desc=String((meta&&meta.description)||'').trim();
+  const detail=desc?`\n\n${desc}`:'';
+  let extra='';
+  if(name==='browser'){
+    extra='\n\nBrowser tools in WebUI must be configured server-side with the agent/browser environment. Once configured, ask the model to use browser tools directly; `/browser` itself only works in `hermes chat`.';
+  }
+  return `\`/${name}\` is a Hermes CLI-only command and cannot run inside the WebUI.${detail}${extra}`;
 }
 
 function _parseSlashAutocomplete(text){
@@ -274,6 +316,26 @@ async function cmdWorkspace(args){
   }catch(e){showToast(t('workspace_switch_failed')+e.message);}
 }
 
+async function cmdTerminal(){
+  if(!S.session&&typeof newSession==='function'){
+    if(!S._profileSwitchWorkspace&&!S._profileDefaultWorkspace){
+      try{
+        const data=await api('/api/workspaces');
+        const first=(data.workspaces||[])[0];
+        S._profileSwitchWorkspace=data.last||(first&&first.path)||null;
+      }catch(_){}
+    }
+    await newSession();
+    if(typeof renderSessionList==='function') await renderSessionList();
+  }
+  if(!S.session||!S.session.workspace){
+    showToast(t('terminal_no_workspace_title'),2600,'warning');
+    if(typeof syncTerminalButton==='function') syncTerminalButton();
+    return;
+  }
+  if(typeof toggleComposerTerminal==='function') await toggleComposerTerminal(true);
+}
+
 async function cmdNew(){
   if(typeof clearCompressionUi==='function') clearCompressionUi();
   await newSession();
@@ -347,6 +409,7 @@ async function _runManualCompression(focusTopic){
         S.toolCalls=data.session.tool_calls||[];
         clearLiveToolCards();
         localStorage.setItem('hermes-webui-session',S.session.session_id);
+        if(typeof _setActiveSessionUrl==='function') _setActiveSessionUrl(S.session.session_id);
         syncTopbar();
         renderMessages();
         await renderSessionList();
@@ -750,7 +813,7 @@ async function cmdStatus(){
     if(r&&r.error){showToast(r.error);return;}
     // Build status card lines matching CLI /status output
     const provider=window._activeProvider||'';
-    const profile=S.activeProfile||'default';
+    const profile=r.profile||S.activeProfile||'default';
     const started=r.created_at?new Date(r.created_at).toLocaleString():t('status_unknown');
     const fmtNum=n=>typeof n==='number'?n.toLocaleString():'0';
     const tokens=r.total_tokens?`${fmtNum(r.input_tokens)} in / ${fmtNum(r.output_tokens)} out`:t('status_no_tokens');
@@ -761,6 +824,7 @@ async function cmdStatus(){
       `**${t('status_title')}:** ${r.title||t('untitled')}`,
       `**${t('status_model')}:** ${r.model||t('usage_default_model')}${provider?'  ('+provider+')':''}`,
       `**${t('status_profile')}:** ${profile}`,
+      `**${t('status_hermes_home')}:** ${r.hermes_home||t('status_unknown')}`,
       `**${t('status_workspace')}:** ${r.workspace}`,
       `**${t('status_personality')}:** ${r.personality||t('usage_personality_none')}`,
       `**${t('status_started')}:** ${started}`,
@@ -851,6 +915,49 @@ async function cmdYolo(){
       hideApprovalCard(true);
     }
   }catch(e){showToast('YOLO: '+e.message);}
+}
+
+// ── Branch / fork command ──
+// Forks the current conversation into a new session (#465).
+// /branch           → full history copy
+// /branch My Name   → full history copy with custom title
+async function cmdBranch(args){
+  if(!S.session){showToast(t('no_active_session'));return;}
+  const customTitle=(args||'').trim()||null;
+  try{
+    const data=await api('/api/session/branch',{
+      method:'POST',
+      body:JSON.stringify({
+        session_id:S.session.session_id,
+        title:customTitle||undefined,
+      }),
+    });
+    if(data&&data.session_id){
+      await loadSession(data.session_id);
+      if(typeof renderSessionList==='function') await renderSessionList();
+      showToast(t('branch_forked'));
+    }
+  }catch(e){showToast(t('branch_failed')+e.message);}
+}
+
+// ── Fork from a specific message point ──
+// Called from the "Fork from here" button on message hover actions.
+async function forkFromMessage(msgIdx){
+  if(!S.session||S.busy)return;
+  try{
+    const data=await api('/api/session/branch',{
+      method:'POST',
+      body:JSON.stringify({
+        session_id:S.session.session_id,
+        keep_count:msgIdx,
+      }),
+    });
+    if(data&&data.session_id){
+      await loadSession(data.session_id);
+      if(typeof renderSessionList==='function') await renderSessionList();
+      showToast(t('branch_forked'));
+    }
+  }catch(e){showToast(t('branch_failed')+e.message);}
 }
 
 let _skillCommandCache=[];

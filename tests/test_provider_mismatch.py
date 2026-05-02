@@ -294,6 +294,274 @@ def test_api_models_includes_active_provider():
     )
 
 
+def test_codex_provider_qualified_model_routes_to_codex_not_openrouter():
+    """@openai-codex:gpt-5.5 must route through OpenAI Codex, not OpenRouter."""
+    import api.config as config
+
+    old_cfg = dict(config.cfg)
+    config.cfg["model"] = {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+    }
+    try:
+        model, provider, base_url = config.resolve_model_provider(
+            "@openai-codex:gpt-5.5"
+        )
+    finally:
+        config.cfg.clear()
+        config.cfg.update(old_cfg)
+
+    assert model == "gpt-5.5"
+    assert provider == "openai-codex"
+    assert provider != "openrouter"
+    assert base_url is None
+
+
+def test_default_model_save_persists_codex_provider_for_qualified_model(tmp_path, monkeypatch):
+    """Saving @openai-codex:gpt-5.5 must persist model.provider=openai-codex."""
+    import yaml
+    import api.config as config
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "model:\n"
+        "  provider: openrouter\n"
+        "  default: openai/gpt-5.4\n"
+        "  base_url: https://openrouter.ai/api/v1\n",
+        encoding="utf-8",
+    )
+    old_cfg = dict(config.cfg)
+    old_mtime = config._cfg_mtime
+    monkeypatch.setattr(config, "_get_config_path", lambda: config_file)
+    config.cfg["model"] = {
+        "provider": "openrouter",
+        "default": "openai/gpt-5.4",
+        "base_url": "https://openrouter.ai/api/v1",
+    }
+    config._cfg_mtime = config_file.stat().st_mtime
+    try:
+        result = config.set_hermes_default_model("@openai-codex:gpt-5.5")
+        saved = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    finally:
+        config.cfg.clear()
+        config.cfg.update(old_cfg)
+        config._cfg_mtime = old_mtime
+        config.invalidate_models_cache()
+
+    assert result["ok"] is True
+    assert result["model"] == "gpt-5.5"
+    assert saved["model"]["default"] == "gpt-5.5"
+    assert saved["model"]["provider"] == "openai-codex"
+    assert saved["model"].get("base_url") != "https://openrouter.ai/api/v1"
+
+
+def test_active_codex_at_provider_session_model_preserved(monkeypatch):
+    """@openai-codex:gpt-5.5 session selections must keep their provider hint."""
+    import api.routes as routes
+
+    monkeypatch.setattr(
+        routes,
+        "get_available_models",
+        lambda: {
+            "active_provider": "openai-codex",
+            "default_model": "gpt-5.5",
+            "groups": [
+                {
+                    "provider": "OpenAI Codex",
+                    "provider_id": "openai-codex",
+                    "models": [{"id": "gpt-5.5", "label": "GPT-5.5"}],
+                },
+                {
+                    "provider": "OpenRouter",
+                    "provider_id": "openrouter",
+                    "models": [{"id": "openai/gpt-5.5", "label": "GPT-5.5"}],
+                },
+            ],
+        },
+    )
+
+    effective, changed = routes._resolve_compatible_session_model(
+        "@openai-codex:gpt-5.5"
+    )
+
+    assert changed is False
+    assert effective == "@openai-codex:gpt-5.5"
+
+
+def test_bare_codex_gpt_session_model_gets_separate_provider_context(monkeypatch):
+    """A bare GPT model under active Codex stays bare and carries model_provider."""
+    import api.routes as routes
+
+    monkeypatch.setattr(
+        routes,
+        "get_available_models",
+        lambda: {
+            "active_provider": "openai-codex",
+            "default_model": "gpt-5.5",
+            "groups": [
+                {
+                    "provider": "OpenAI Codex",
+                    "provider_id": "openai-codex",
+                    "models": [{"id": "gpt-5.5", "label": "GPT-5.5"}],
+                },
+                {
+                    "provider": "OpenRouter",
+                    "provider_id": "openrouter",
+                    "models": [{"id": "openai/gpt-5.5", "label": "GPT-5.5"}],
+                },
+            ],
+        },
+    )
+
+    effective, provider, changed = routes._resolve_compatible_session_model_state("gpt-5.5")
+
+    assert changed is False
+    assert effective == "gpt-5.5"
+    assert provider == "openai-codex"
+
+
+def test_session_model_normalizer_keeps_bare_codex_model_and_saves_provider(monkeypatch):
+    """Write-path normalization must persist model_provider without adding @."""
+    import api.routes as routes
+
+    monkeypatch.setattr(
+        routes,
+        "get_available_models",
+        lambda: {
+            "active_provider": "openai-codex",
+            "default_model": "gpt-5.5",
+            "groups": [
+                {
+                    "provider": "OpenAI Codex",
+                    "provider_id": "openai-codex",
+                    "models": [{"id": "gpt-5.5", "label": "GPT-5.5"}],
+                },
+            ],
+        },
+    )
+
+    save_calls = []
+
+    class DummySession:
+        def __init__(self):
+            self.model = "gpt-5.5"
+            self.model_provider = None
+
+        def save(self, touch_updated_at=True):
+            save_calls.append(touch_updated_at)
+
+    session = DummySession()
+    effective = routes._normalize_session_model_in_place(session)
+
+    assert effective == "gpt-5.5"
+    assert session.model == "gpt-5.5"
+    assert session.model_provider == "openai-codex"
+    assert save_calls == [False]
+
+
+def test_bare_codex_gpt_runtime_bridge_routes_to_codex(monkeypatch):
+    """Bare model + model_provider=openai-codex must route Codex at runtime."""
+    import api.config as config
+
+    old_cfg = dict(config.cfg)
+    config.cfg["model"] = {
+        "provider": "openrouter",
+        "default": "openai/gpt-5.4",
+        "base_url": "https://openrouter.ai/api/v1",
+    }
+    try:
+        runtime_model = config.model_with_provider_context(
+            "gpt-5.5",
+            "openai-codex",
+        )
+        model, provider, base_url = config.resolve_model_provider(runtime_model)
+    finally:
+        config.cfg.clear()
+        config.cfg.update(old_cfg)
+
+    assert runtime_model == "@openai-codex:gpt-5.5"
+    assert model == "gpt-5.5"
+    assert provider == "openai-codex"
+    assert base_url is None
+
+
+def test_non_openrouter_slash_model_provider_context_stays_unqualified():
+    """Portal/custom slash IDs must not be blindly wrapped as @provider:model."""
+    import api.config as config
+
+    runtime_model = config.model_with_provider_context(
+        "anthropic/claude-sonnet-4.6",
+        "nous",
+    )
+
+    assert runtime_model == "anthropic/claude-sonnet-4.6"
+
+
+def test_api_session_new_persists_model_provider_context():
+    """POST /api/session/new returns compact session model_provider metadata."""
+    created, status = _post(
+        "/api/session/new",
+        {"model": "gpt-5.5", "model_provider": "openai-codex"},
+    )
+
+    assert status == 200
+    assert created["session"]["model"] == "gpt-5.5"
+    assert created["session"]["model_provider"] == "openai-codex"
+
+
+def test_explicit_openrouter_selection_supported_with_codex_base_url():
+    """OpenRouter slash and @openrouter selections must remain routable."""
+    import api.config as config
+
+    old_cfg = dict(config.cfg)
+    config.cfg["model"] = {
+        "provider": "openai-codex",
+        "default": "gpt-5.5",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+    }
+    try:
+        slash_model, slash_provider, slash_base_url = config.resolve_model_provider(
+            "openai/gpt-5.5"
+        )
+        at_model, at_provider, at_base_url = config.resolve_model_provider(
+            "@openrouter:openai/gpt-5.5"
+        )
+    finally:
+        config.cfg.clear()
+        config.cfg.update(old_cfg)
+
+    assert slash_model == "openai/gpt-5.5"
+    assert slash_provider == "openrouter"
+    assert slash_base_url is None
+    assert at_model == "openai/gpt-5.5"
+    assert at_provider == "openrouter"
+    assert at_base_url is None
+
+
+def test_real_provider_custom_base_url_slash_model_stays_on_configured_endpoint():
+    """A real-provider proxy base_url must not be silently rerouted to OpenRouter."""
+    import api.config as config
+
+    old_cfg = dict(config.cfg)
+    config.cfg["model"] = {
+        "provider": "openai",
+        "default": "google/gemma-4-26b-a4b",
+        "base_url": "http://proxy.local/v1",
+    }
+    try:
+        model, provider, base_url = config.resolve_model_provider(
+            "google/gemma-4-26b-a4b"
+        )
+    finally:
+        config.cfg.clear()
+        config.cfg.update(old_cfg)
+
+    assert model == "gemma-4-26b-a4b"
+    assert provider == "openai"
+    assert provider != "openrouter"
+    assert base_url == "http://proxy.local/v1"
+
+
 def test_bare_gemini_session_model_normalizes_to_active_provider_default(monkeypatch):
     """Persisted bare Gemini IDs must not survive a provider switch."""
     import api.routes as routes
@@ -364,8 +632,15 @@ def test_legacy_at_provider_session_model_normalizes_when_provider_hidden(monkey
     assert effective == "gpt-5.5"
 
 
-def test_active_at_provider_session_model_strips_redundant_hint(monkeypatch):
-    """@active-provider:model is an old persisted form; use the bare model now."""
+def test_active_at_provider_session_model_preserved_with_hint(monkeypatch):
+    """@active-provider:model must be preserved — stripping the prefix breaks duplicate-ID routing.
+
+    Before #1253 was fixed, this path stripped the @provider: prefix and returned
+    the bare model ID. That caused the picker to snap to the first matching provider
+    (not the explicitly selected one) on the next send, and the agent to run on the
+    wrong provider. The fix returns the full @provider:model unchanged so
+    resolve_model_provider() can route through the correct provider.
+    """
     import api.routes as routes
 
     monkeypatch.setattr(
@@ -388,8 +663,10 @@ def test_active_at_provider_session_model_strips_redundant_hint(monkeypatch):
         "@openai-codex:gpt-5.4-mini"
     )
 
-    assert changed is True
-    assert effective == "gpt-5.4-mini"
+    # Must preserve the full @provider:model so resolve_model_provider() routes
+    # through openai-codex, not through whatever provider happens to be first.
+    assert changed is False
+    assert effective == "@openai-codex:gpt-5.4-mini"
 
 
 def test_routable_non_active_at_provider_session_model_is_preserved(monkeypatch):
@@ -423,6 +700,98 @@ def test_routable_non_active_at_provider_session_model_is_preserved(monkeypatch)
 
     assert changed is False
     assert effective == "@copilot:gpt-5.4"
+
+
+def test_issue1253_duplicate_model_id_active_provider_hint_preserved(monkeypatch):
+    """@provider:model where hint matches active provider must survive _resolve_compatible_session_model.
+
+    Regression test for #1253: when two providers both expose the same bare model ID
+    (e.g. both custom:edith and openai both expose 'gpt-5.4'), the picker stores the
+    selection as @custom:gpt-5.4. On chat/start that value must be returned unchanged
+    so resolve_model_provider() routes to 'custom', not to the default provider.
+
+    Before the fix, hint_matches_active=True caused the prefix to be stripped:
+      '@custom:gpt-5.4' → ('gpt-5.4', True)
+    which then got written back to disk and sent as effective_model, snapping the
+    picker to the first (wrong) provider.
+    """
+    import api.routes as routes
+
+    monkeypatch.setattr(
+        routes,
+        "get_available_models",
+        lambda: {
+            "active_provider": "custom",
+            "default_model": "gpt-5.4",
+            "groups": [
+                {
+                    "provider": "Custom",
+                    "provider_id": "custom",
+                    "models": [{"id": "@custom:edith", "label": "Edith"}],
+                },
+                {
+                    "provider": "OpenAI Codex",
+                    "provider_id": "openai-codex",
+                    "models": [{"id": "gpt-5.4", "label": "GPT-5.4"}],
+                },
+            ],
+        },
+    )
+
+    # User selected the custom:edith model — explicit @provider:model form.
+    effective, changed = routes._resolve_compatible_session_model("@custom:edith")
+
+    # Must NOT be stripped to 'edith' — that would route to the default provider.
+    assert changed is False, (
+        f"_resolve_compatible_session_model must not strip @custom:edith "
+        f"(got effective='{effective}', changed={changed})"
+    )
+    assert effective == "@custom:edith", (
+        f"expected '@custom:edith', got '{effective}'"
+    )
+
+
+def test_named_custom_provider_hint_with_colon_is_preserved(monkeypatch):
+    """@custom:name:model must survive chat/start normalization for WebUI routing."""
+    import api.routes as routes
+
+    monkeypatch.setattr(
+        routes,
+        "get_available_models",
+        lambda: {
+            "active_provider": "deepseek",
+            "default_model": "deepseek-v4-pro",
+            "groups": [
+                {
+                    "provider": "sub2api",
+                    "provider_id": "custom:sub2api",
+                    "models": [
+                        {
+                            "id": "@custom:sub2api:gpt-5.4-mini",
+                            "label": "GPT 5.4 Mini",
+                        }
+                    ],
+                },
+                {
+                    "provider": "DeepSeek",
+                    "provider_id": "deepseek",
+                    "models": [
+                        {
+                            "id": "deepseek-v4-pro",
+                            "label": "DeepSeek V4 Pro",
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+
+    effective, changed = routes._resolve_compatible_session_model(
+        "@custom:sub2api:gpt-5.4-mini"
+    )
+
+    assert changed is False
+    assert effective == "@custom:sub2api:gpt-5.4-mini"
 
 
 def test_stale_at_provider_model_falls_back_when_family_mismatches(monkeypatch):
@@ -576,34 +945,33 @@ def test_api_session_is_side_effect_free_for_stale_models():
 # ── Model switch toast (#419) ─────────────────────────────────────────────────
 
 class TestModelSwitchToast:
-    """Toast appears when user switches model during an active session."""
+    """Toast appears when user switches the current conversation model."""
 
     def test_toast_in_model_select_onchange(self):
-        """modelSelect.onchange must show a toast when S.messages is non-empty."""
+        """modelSelect.onchange must show a scope toast after selecting a model."""
         src = _read("static/boot.js")
         # Find the onchange block
         idx = src.find("modelSelect').onchange")
         assert idx != -1, "modelSelect.onchange not found in boot.js"
         block = src[idx:idx + 1100]
-        assert "Model change takes effect in your next conversation" in block, (
-            "modelSelect.onchange must show a toast when switching model mid-session"
+        assert "model_scope_toast" in block, (
+            "modelSelect.onchange must show that the selected model applies to this conversation"
         )
 
-    def test_toast_guards_on_messages_length(self):
-        """Toast must only fire when there are existing messages (active session)."""
+    def test_toast_is_not_gated_on_messages_length(self):
+        """Toast must fire for every model selection, not only sessions with messages."""
         src = _read("static/boot.js")
-        idx = src.find("Model change takes effect in your next conversation")
+        idx = src.find("model_scope_toast")
         assert idx != -1
-        # Look back 200 chars for the S.messages guard
-        surrounding = src[max(0, idx - 200):idx + 50]
-        assert "S.messages" in surrounding and ".length" in surrounding, (
-            "Model switch toast must be gated on S.messages.length > 0"
+        surrounding = src[max(0, idx - 220):idx + 80]
+        assert not ("S.messages" in surrounding and ".length" in surrounding), (
+            "Model scope toast should not be gated on S.messages.length"
         )
 
     def test_toast_uses_show_toast_not_alert(self):
         """Toast must use showToast(), not alert()."""
         src = _read("static/boot.js")
-        idx = src.find("Model change takes effect in your next conversation")
+        idx = src.find("model_scope_toast")
         assert idx != -1
         surrounding = src[max(0, idx - 50):idx + 100]
         assert "showToast" in surrounding, "Must use showToast() not alert()"
@@ -612,7 +980,7 @@ class TestModelSwitchToast:
     def test_toast_has_typeof_showtoast_guard(self):
         """Toast call must guard typeof showToast to be safe during boot."""
         src = _read("static/boot.js")
-        idx = src.find("Model change takes effect in your next conversation")
+        idx = src.find("model_scope_toast")
         assert idx != -1
         surrounding = src[max(0, idx - 100):idx + 50]
         assert "typeof showToast" in surrounding, (
@@ -632,6 +1000,30 @@ class TestChatStartEffectiveModelRecovery:
         assert "localStorage.setItem('hermes-webui-model', startData.effective_model)" in src, (
             "effective_model correction must update the saved model preference"
         )
+        assert "startData.effective_model_provider" in src, (
+            "send() must preserve provider context returned by /api/chat/start"
+        )
+
+
+class TestFrontendModelProviderState:
+    """Frontend model persistence should store provider separately."""
+
+    def test_boot_session_update_sends_model_provider(self):
+        src = _read("static/boot.js")
+        assert "_modelStateForSelect" in src
+        assert "model_provider:modelState.model_provider||null" in src
+
+    def test_new_session_sends_model_provider(self):
+        src = _read("static/sessions.js")
+        assert "_modelStateForSelect(modelSel,selectedDefaultModel)" in src
+        assert "model_provider:newModelState.model_provider||null" in src
+
+    def test_ui_has_json_model_state_storage(self):
+        src = _read("static/ui.js")
+        assert "hermes-webui-model-state" in src
+        assert "function _writePersistedModelState" in src
+        assert "_providerQualifiedModelValueForSelect(sel, modelId)" in src
+        assert "return _modelStateForSelect(sel,modelId).model" in src
 
 
 def test_unknown_prefix_model_passes_through_unchanged(monkeypatch):

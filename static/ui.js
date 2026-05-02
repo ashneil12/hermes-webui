@@ -51,6 +51,45 @@ function _setCompressionSessionLock(sid){
 }
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+/**
+ * Render fenced code blocks inside user messages.
+ * Extracts ```…``` fences, replaces them with placeholders,
+ * escapes remaining text as plain HTML, then restores code blocks
+ * with the same <pre><code> pipeline used by renderMd().
+ * All non-fenced text stays escaped (no bold/italic/link interpretation).
+ */
+function _renderUserFencedBlocks(text){
+  const stash=[];
+  let s=String(text||'');
+  // Extract fenced code blocks → stash, replace with null-token placeholder
+  // CommonMark line-anchored fence (fixes #1438): inner ``` inside content no longer truncates the block.
+  s=s.replace(/(^|\n)[ ]{0,3}```([a-zA-Z0-9_+-]*)\n(?:([\s\S]*?)\n)?[ ]{0,3}```(?=\n|$)/g,(_,lead,lang,code)=>{
+    lang=(lang||'').trim().toLowerCase();
+    code=code||'';
+    // Remove one trailing newline if present (the fence consumes its own)
+    if(code.endsWith('\n')) code=code.slice(0,-1);
+    const h=lang?`<div class="pre-header">${esc(lang)}</div>`:'';
+    const langAttr=lang?` class="language-${esc(lang)}"`:'';
+    if(lang==='diff'||lang==='patch'){
+      const colored=esc(code).split('\n').map(line=>{
+        if(line.startsWith('@@')) return `<span class="diff-line diff-hunk">${line}</span>`;
+        if(line.startsWith('+')) return `<span class="diff-line diff-plus">${line}</span>`;
+        if(line.startsWith('-')) return `<span class="diff-line diff-minus">${line}</span>`;
+        return `<span class="diff-line">${line}</span>`;
+      }).join('\n');
+      stash.push(`${h}<pre class="diff-block"><code${langAttr}>${colored}</code></pre>`);
+    } else {
+      stash.push(`${h}<pre><code${langAttr}>${esc(code)}</code></pre>`);
+    }
+    return lead+'\x00UF'+(stash.length-1)+'\x00';
+  });
+  // Escape remaining plain text and convert newlines to <br>
+  s=esc(s).replace(/\n/g,'<br>');
+  // Restore stashed code blocks
+  s=s.replace(/\x00UF(\d+)\x00/g,(_,i)=>stash[+i]);
+  return s;
+}
+
 /* ── Image lightbox — click any .msg-media-img to enlarge ─────────────────── */
 function _openImgLightbox(src, alt) {
   const lb = document.createElement('div');
@@ -88,22 +127,195 @@ document.addEventListener('click', e => {
 });
 
 const _IMAGE_EXTS=/\.(png|jpg|jpeg|gif|webp|bmp|ico|avif)$/i;
+const _PDF_EXTS=/\.pdf$/i;
+const _HTML_EXTS=/\.(html?|htm)$/i;
+const _ARCHIVE_EXTS=/\.(zip|tar|tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz|txz)$/i;
+const _SVG_EXTS=/\.svg$/i;
+const _AUDIO_EXTS=/\.(mp3|ogg|wav|m4a|aac|flac|wma|opus|webm|oga)$/i;
+const _VIDEO_EXTS=/\.(mp4|webm|mkv|mov|avi|ogv|m4v)$/i;
+const _CSV_EXTS=/\.csv$/i;
+const _EXCALIDRAW_EXTS=/\.excalidraw$/i;
+// ── Media playback speed controls ─────────────────────────────────────────
+const MEDIA_PLAYBACK_RATES=[0.5,0.75,1,1.25,1.5,2];
+const MEDIA_PLAYBACK_STORAGE_KEY='hermes-media-playback-rate';
+function _getStoredMediaPlaybackRate(){
+  try{
+    const raw=localStorage.getItem(MEDIA_PLAYBACK_STORAGE_KEY);
+    const rate=Number(raw);
+    return MEDIA_PLAYBACK_RATES.includes(rate)?rate:1;
+  }catch(_){return 1;}
+}
+function _setStoredMediaPlaybackRate(rate){
+  if(!MEDIA_PLAYBACK_RATES.includes(rate)) return;
+  try{localStorage.setItem(MEDIA_PLAYBACK_STORAGE_KEY,String(rate));}catch(_){}
+}
+function _syncMediaSpeedButtons(editor, rate){
+  if(!editor) return;
+  editor.querySelectorAll('.media-speed-btn').forEach(b=>{
+    const active=Number(b.dataset.rate)===rate;
+    b.classList.toggle('active',active);
+    b.setAttribute('aria-pressed',active?'true':'false');
+  });
+}
+function _applyMediaPlaybackRate(media, rate=_getStoredMediaPlaybackRate()){
+  if(!media) return;
+  media.playbackRate=rate;
+  _syncMediaSpeedButtons(media.closest('.msg-media-editor,.preview-media-wrap'),rate);
+}
+function _mediaKindForName(name=''){
+  const clean=String(name||'').split('?')[0].toLowerCase();
+  if(_AUDIO_EXTS.test(clean)) return 'audio';
+  if(_VIDEO_EXTS.test(clean)) return 'video';
+  if(_IMAGE_EXTS.test(clean)) return 'image';
+  return '';
+}
+function _mediaSpeedControlsHtml(kind, label){
+  const safeLabel=esc(label||kind||'media');
+  const current=_getStoredMediaPlaybackRate();
+  return `<div class="media-speed-controls" role="group" aria-label="Playback speed for ${safeLabel}">${MEDIA_PLAYBACK_RATES.map(rate=>`<button type="button" class="media-speed-btn${rate===current?' active':''}" data-rate="${rate}" aria-pressed="${rate===current?'true':'false'}">${rate}×</button>`).join('')}</div>`;
+}
+function _mediaPlayerHtml(kind, src, name, extra=''){
+  const safeName=esc(name||'media');
+  const safeSrc=esc(src);
+  const tag=kind==='video'
+    ? `<video class="msg-media-player msg-media-video" src="${safeSrc}" controls preload="metadata" playsinline title="${safeName}"></video>`
+    : `<audio class="msg-media-player msg-media-audio" src="${safeSrc}" controls preload="metadata" title="${safeName}"></audio>`;
+  return `<div class="msg-media-editor msg-media-editor--${kind}" data-media-kind="${kind}">${tag}<div class="msg-media-meta"><span class="msg-media-name">${safeName}</span>${extra}</div>${_mediaSpeedControlsHtml(kind,safeName)}</div>`;
+}
+function _renderAttachmentHtml(fname, url){
+  const kind=_mediaKindForName(fname);
+  if(kind==='image') return `<img class="msg-media-img" src="${esc(url)}" alt="${esc(fname)}" loading="lazy">`;
+  if(kind==='audio'||kind==='video') return _mediaPlayerHtml(kind,url,fname);
+  return `<div class="msg-file-badge">${li('paperclip',12)} ${esc(fname)}</div>`;
+}
+document.addEventListener('click', e => {
+  const btn=e.target&&e.target.closest?e.target.closest('.media-speed-btn'):null;
+  if(!btn) return;
+  const editor=btn.closest('.msg-media-editor,.preview-media-wrap');
+  if(!editor) return;
+  const media=editor.querySelector('audio,video');
+  if(!media) return;
+  const rate=Number(btn.dataset.rate)||1;
+  _setStoredMediaPlaybackRate(rate);
+  _applyMediaPlaybackRate(media,rate);
+});
+document.addEventListener("loadedmetadata", e=>{
+  if(e.target&&e.target.matches&&e.target.matches('.msg-media-player,audio,video')){
+    _applyMediaPlaybackRate(e.target);
+  }
+},true);
+function _initMediaPlaybackObserver(){
+  if(!document.body||window._mediaPlaybackObserver) return;
+  window._mediaPlaybackObserver=new MutationObserver(records=>{
+    for(const rec of records){
+      for(const node of rec.addedNodes||[]){
+        if(!node||node.nodeType!==1) continue;
+        const media=[];
+        if(node.matches&&node.matches('audio,video')) media.push(node);
+        if(node.querySelectorAll) media.push(...node.querySelectorAll('audio,video'));
+        media.forEach(m=>_applyMediaPlaybackRate(m));
+      }
+    }
+  });
+  window._mediaPlaybackObserver.observe(document.body,{childList:true,subtree:true});
+  document.querySelectorAll('audio,video').forEach(m=>_applyMediaPlaybackRate(m));
+}
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_initMediaPlaybackObserver);
+else _initMediaPlaybackObserver();
+setTimeout(_initMediaPlaybackObserver,0);
 
 // Dynamic model labels -- populated by populateModelDropdown(), fallback to static map
 let _dynamicModelLabels={};
+window._configuredModelBadges=window._configuredModelBadges||{};
+const MODEL_STATE_KEY='hermes-webui-model-state';
 
 // ── Smart model resolver ────────────────────────────────────────────────────
 // Finds the best matching option value in a <select> for a given model ID.
 // Handles mismatches like 'claude-sonnet-4-6' vs 'anthropic/claude-sonnet-4.6'.
-// Returns the matched option's value (already in the list), or null if no match.
-function _findModelInDropdown(modelId, sel){
+// When a preferred provider is supplied, duplicate normalized IDs prefer that
+// provider's option so Settings/profile rehydration doesn't snap back to the
+// first colliding entry.
+function _getOptionProviderId(opt){
+  if(!opt) return '';
+  const group=opt.parentElement;
+  if(group && group.tagName==='OPTGROUP' && group.dataset && group.dataset.provider){
+    return group.dataset.provider;
+  }
+  const value=String(opt.value||'');
+  if(value.startsWith('@') && value.includes(':')) return value.slice(1,value.lastIndexOf(':'));
+  return '';
+}
+function _providerFromModelValue(modelId){
+  const value=String(modelId||'').trim();
+  if(value.startsWith('@')&&value.includes(':')) return value.slice(1,value.lastIndexOf(':'));
+  return '';
+}
+function _modelStateForSelect(sel, modelId){
+  const value=String(modelId||'').trim();
+  if(!value) return {model:'',model_provider:null};
+  const explicitProvider=_providerFromModelValue(value);
+  if(explicitProvider) return {model:value,model_provider:explicitProvider};
+  const opt=sel&&sel.selectedOptions&&sel.selectedOptions[0];
+  const provider=String(_getOptionProviderId(opt)||'').trim();
+  return {model:value,model_provider:(provider&&provider!=='default')?provider:null};
+}
+function _providerQualifiedModelValueForSelect(sel, modelId){
+  return _modelStateForSelect(sel,modelId).model;
+}
+function _readPersistedModelState(){
+  try{
+    const raw=localStorage.getItem(MODEL_STATE_KEY);
+    if(raw){
+      const parsed=JSON.parse(raw);
+      if(parsed&&parsed.model){
+        return {
+          model:String(parsed.model||''),
+          model_provider:parsed.model_provider?String(parsed.model_provider):(_providerFromModelValue(parsed.model)||null),
+        };
+      }
+    }
+  }catch(_){}
+  const legacy=localStorage.getItem('hermes-webui-model');
+  if(!legacy) return null;
+  return {model:legacy,model_provider:_providerFromModelValue(legacy)||null};
+}
+function _writePersistedModelState(model, modelProvider){
+  const value=String(model||'').trim();
+  const provider=modelProvider?String(modelProvider).trim():(_providerFromModelValue(value)||null);
+  if(!value){
+    localStorage.removeItem('hermes-webui-model');
+    localStorage.removeItem(MODEL_STATE_KEY);
+    return;
+  }
+  localStorage.setItem('hermes-webui-model', value);
+  try{
+    localStorage.setItem(MODEL_STATE_KEY, JSON.stringify({model:value,model_provider:provider||null}));
+  }catch(_){}
+}
+function _clearPersistedModelState(){
+  localStorage.removeItem('hermes-webui-model');
+  localStorage.removeItem(MODEL_STATE_KEY);
+}
+function _findModelInDropdown(modelId, sel, preferredProviderId){
   if(!modelId||!sel) return null;
-  const opts=Array.from(sel.options).map(o=>o.value);
-  // 1. Exact match
-  if(opts.includes(modelId)) return modelId;
-  // 2. Normalize: lowercase, strip namespace prefix, replace hyphens→dots
-  const norm=s=>s.toLowerCase().replace(/^[^/]+\//,'').replace(/-/g,'.');
+  const options=Array.from(sel.options);
+  const opts=options.map(o=>o.value);
+  // 1. Normalize: lowercase, strip namespace prefix, replace hyphens→dots.
+  // Also strip @provider: prefix from deduplicated model IDs (#1228, #1313).
+  const norm=s=>s.toLowerCase().replace(/^[^/]+\//,'').replace(/^@([^:]+:)+/,'').replace(/-/g,'.');
   const target=norm(modelId);
+  let explicitProvider='';
+  const rawModel=String(modelId||'');
+  if(rawModel.startsWith('@')&&rawModel.includes(':')){
+    explicitProvider=rawModel.slice(1,rawModel.lastIndexOf(':'));
+  }
+  const preferred=String(preferredProviderId||explicitProvider||'').toLowerCase();
+  if(preferred){
+    const providerMatch=options.find(o=>norm(o.value)===target && _getOptionProviderId(o).toLowerCase()===preferred);
+    if(providerMatch) return providerMatch.value;
+  }
+  // 2. Exact match
+  if(opts.includes(modelId)) return modelId;
   const exact=opts.find(o=>norm(o)===target);
   if(exact) return exact;
   // 3. Prefix/substring: require the candidate to start with the FULL normalized target
@@ -119,9 +331,9 @@ function _findModelInDropdown(modelId, sel){
 
 // Set the model picker to the best match for modelId.
 // Returns the resolved value that was actually set, or null if nothing matched.
-function _applyModelToDropdown(modelId, sel){
+function _applyModelToDropdown(modelId, sel, preferredProviderId){
   if(!modelId||!sel) return null;
-  const resolved=_findModelInDropdown(modelId,sel);
+  const resolved=_findModelInDropdown(modelId,sel,preferredProviderId);
   if(resolved){
     sel.value=resolved;
     if(sel.id==='modelSelect' && typeof syncModelChip==='function') syncModelChip();
@@ -134,7 +346,7 @@ async function populateModelDropdown(){
   const sel=$('modelSelect');
   if(!sel) return;
   try{
-    const _modelsRes=await fetch(new URL('api/models',location.href).href,{credentials:'include'});
+    const _modelsRes=await fetch(new URL('api/models',document.baseURI||location.href).href,{credentials:'include'});
     if(_redirectIfUnauth(_modelsRes)) return;
     const data=await _modelsRes.json();
     if(!data.groups||!data.groups.length) return; // keep HTML defaults
@@ -143,6 +355,7 @@ async function populateModelDropdown(){
     // Store default model so newSession() can apply it (#872).
     // Per-page-load — not synced across browser tabs.
     window._defaultModel=data.default_model||null;
+    window._configuredModelBadges=data.configured_model_badges||{};
     // Clear existing options
     sel.innerHTML='';
     _dynamicModelLabels={};
@@ -160,8 +373,8 @@ async function populateModelDropdown(){
       sel.appendChild(og);
     }
     // Set default model from server if no localStorage preference
-    if(data.default_model && !localStorage.getItem('hermes-webui-model')){
-      _applyModelToDropdown(data.default_model, sel);
+    if(data.default_model && !(typeof _readPersistedModelState==='function'&&_readPersistedModelState()) && !localStorage.getItem('hermes-webui-model')){
+      _applyModelToDropdown(data.default_model, sel, data.active_provider||null);
     }
     if(typeof syncModelChip==='function') syncModelChip();
     // Kick off a background live-model fetch for the active provider.
@@ -213,7 +426,7 @@ function _addLiveModelsToSelect(provider, models, sel){
   const existingNorm=new Set([...sel.options].map(o=>_normId(o.value)));
   let added=0;
   const _ap=(window._activeProvider||'').toLowerCase();
-  const _isPortalFetch=_ap && _ap!=='openrouter' && _ap!=='custom' && provider===_ap;
+  const _isPortalFetch=_ap && _ap!=='openrouter' && _ap!=='custom' && _ap!=='openai-codex' && provider===_ap;
   for(const m of models){
     let mid=m.id;
     if(_isPortalFetch && !mid.startsWith('@')){
@@ -229,13 +442,14 @@ function _addLiveModelsToSelect(provider, models, sel){
     _dynamicModelLabels[mid]=m.label||m.id;
     added++;
   }
-  if(added>0 && currentVal) _applyModelToDropdown(currentVal, sel);
+  const currentProvider=(S.session&&S.session.model_provider)||null;
+  if(added>0 && currentVal) _applyModelToDropdown(currentVal, sel, currentProvider);
   // After live models are added, re-apply the session's model in case it was
   // absent from the static list and syncTopbar() fired before the live fetch
   // completed (#1169). This ensures the session model wins over any premature
   // fallback that may have set sel.value to the first available option.
   if(S.session && S.session.model && sel.id==='modelSelect'){
-    const reapplied=_applyModelToDropdown(S.session.model, sel);
+    const reapplied=_applyModelToDropdown(S.session.model, sel, S.session.model_provider||null);
     if(reapplied && typeof syncModelChip==='function') syncModelChip();
   }
   return added;
@@ -251,7 +465,7 @@ async function _fetchLiveModels(provider, sel){
   }
   _liveModelFetchPending.add(provider);
   try{
-    const url=new URL('api/models/live',location.href);
+    const url=new URL('api/models/live',document.baseURI||location.href);
     url.searchParams.set('provider',provider);
     const _liveRes=await fetch(url.href,{credentials:'include'});
     if(_redirectIfUnauth(_liveRes)) return;
@@ -304,26 +518,66 @@ function _selectedModelOption(){
   return sel.options[sel.selectedIndex]||null;
 }
 
+function _normalizeConfiguredModelKey(modelId){
+  let s=String(modelId||'').trim().toLowerCase();
+  if(s.startsWith('@')&&s.includes(':')) s=s.substring(s.indexOf(':')+1);
+  if(s.includes('/')) s=s.split('/').pop();
+  return s.replace(/-/g,'.');
+}
+
+function _getConfiguredModelBadge(modelId,badgeMap,providerId){
+  const map=badgeMap||window._configuredModelBadges||{};
+  if(!modelId||!map) return null;
+  const provider=String(providerId||'').toLowerCase();
+  const exact=map[modelId];
+  if(exact && (!provider || !exact.provider || String(exact.provider).toLowerCase()===provider)) return exact;
+  const targetNorm=_normalizeConfiguredModelKey(modelId);
+  const matches=[];
+  for(const [candidate,badge] of Object.entries(map)){
+    if(_normalizeConfiguredModelKey(candidate)===targetNorm) matches.push(badge);
+  }
+  if(!matches.length) return null;
+  if(provider){
+    const providerMatch=matches.find(badge=>String(badge&&badge.provider||'').toLowerCase()===provider);
+    if(providerMatch) return providerMatch;
+    return matches.length===1 ? matches[0] : null;
+  }
+  return matches[0];
+}
+
 function syncModelChip(){
   const sel=$('modelSelect');
   const chip=$('composerModelChip');
   const label=$('composerModelLabel');
+  const mobileLabel=$('composerMobileModelLabel');
+  const mobileAction=$('composerMobileModelAction');
   const dd=$('composerModelDropdown');
   if(!sel||!chip||!label) return;
   // Don't show a model label until boot has finished loading to prevent flash of wrong default
-  if(!S._bootReady){ label.textContent=''; chip.title='Conversation model'; return; }
+  if(!S._bootReady){
+    label.textContent='';
+    if(mobileLabel) mobileLabel.textContent='';
+    chip.title='Conversation model';
+    return;
+  }
   const opt=_selectedModelOption();
-  label.textContent=opt?opt.textContent:getModelLabel(sel.value||'');
+  const text=opt?opt.textContent:getModelLabel(sel.value||'');
+  label.textContent=text;
+  if(mobileLabel) mobileLabel.textContent=text;
   chip.title=sel.value||'Conversation model';
   chip.classList.toggle('active',!!(dd&&dd.classList.contains('open')));
+  if(mobileAction) mobileAction.classList.toggle('active',!!(dd&&dd.classList.contains('open')));
 }
 
 function _positionModelDropdown(){
   const dd=$('composerModelDropdown');
   const chip=$('composerModelChip');
+  const mobileAction=$('composerMobileModelAction');
   const footer=document.querySelector('.composer-footer');
   if(!dd||!chip||!footer) return;
-  const chipRect=chip.getBoundingClientRect();
+  const panel=$('composerMobileConfigPanel');
+  const anchor=(panel&&panel.classList.contains('open')&&mobileAction)?mobileAction:chip;
+  const chipRect=anchor.getBoundingClientRect();
   const footerRect=footer.getBoundingClientRect();
   let left=chipRect.left-footerRect.left;
   const maxLeft=Math.max(0, footer.clientWidth-dd.offsetWidth);
@@ -337,17 +591,34 @@ function renderModelDropdown(){
   if(!dd||!sel) return;
   // Store model data for filtering
   const _modelData=[];
+  const _badgeMap=window._configuredModelBadges||{};
   for(const child of Array.from(sel.children)){
     if(child.tagName==='OPTGROUP'){
+      const providerId=child.dataset&&child.dataset.provider?child.dataset.provider:'';
       for(const opt of Array.from(child.children)){
-        _modelData.push({value:opt.value,name:esc(opt.textContent||getModelLabel(opt.value)),id:esc(opt.value),group:child.label||''});
+        _modelData.push({value:opt.value,name:esc(opt.textContent||getModelLabel(opt.value)),id:esc(opt.value),group:child.label||'',badge:_getConfiguredModelBadge(opt.value,_badgeMap,providerId)});
       }
     }
     if(child.tagName==='OPTION'){
-      _modelData.push({value:child.value,name:esc(child.textContent||getModelLabel(child.value)),id:esc(child.value),group:''});
+      _modelData.push({value:child.value,name:esc(child.textContent||getModelLabel(child.value)),id:esc(child.value),group:'',badge:_getConfiguredModelBadge(child.value,_badgeMap)});
     }
   }
+  const _existingConfiguredKeys=new Set(_modelData.map(existing=>_normalizeConfiguredModelKey(existing.value)));
+  for(const [modelId,badge] of Object.entries(_badgeMap)){
+    if(_existingConfiguredKeys.has(_normalizeConfiguredModelKey(modelId))) continue;
+    _modelData.push({
+      value:modelId,
+      name:esc(getModelLabel(modelId)),
+      id:esc(modelId),
+      group:'',
+      badge,
+    });
+    _existingConfiguredKeys.add(_normalizeConfiguredModelKey(modelId));
+  }
   // Create search input FIRST before filterModels definition
+  const _scopeNote=document.createElement('div');
+  _scopeNote.className='model-scope-note';
+  _scopeNote.textContent=t('model_scope_advisory')||'Applies to this conversation from your next message.';
   const _searchRow=document.createElement('div');
   _searchRow.className='model-search-row';
   _searchRow.innerHTML=`<input class="model-search-input" type="text" placeholder="${esc(t('model_search_placeholder')||'Search models…')}" spellcheck="false" autocomplete="off"><button class="model-search-clear" title="Clear search">${li('x',10)}</button>`;
@@ -362,6 +633,15 @@ function renderModelDropdown(){
   _custRow.innerHTML=`<input class="model-custom-input" type="text" placeholder="${esc(t('model_custom_placeholder')||'e.g. openai/gpt-5.4')}" spellcheck="false" autocomplete="off"><button class="model-custom-btn" title="Use this model">${li('plus',12)}</button>`;
   const _ci=_custRow.querySelector('.model-custom-input');
   const _cb=_custRow.querySelector('.model-custom-btn');
+  const _configuredRank=(badge)=>{
+    if(!badge) return Number.POSITIVE_INFINITY;
+    if(badge.role==='primary') return 0;
+    if(badge.role==='fallback'){
+      const m=String(badge.label||'').match(/fallback\s+(\d+)/i);
+      return m?Number(m[1]):999;
+    }
+    return 500;
+  };
   // Filter function (defined AFTER _searchRow and _cust* are created)
   const _filterModels=(term)=>{
     term=term.trim().toLowerCase();
@@ -373,29 +653,54 @@ function renderModelDropdown(){
         found.add(m.value);
       }
     }
+    const matches=(m)=>!term||found.has(m.value);
+    const configuredModels=_modelData
+      .filter(m=>m.badge&&matches(m))
+      .sort((a,b)=>{
+        const configuredRankA=_configuredRank(a.badge);
+        const configuredRankB=_configuredRank(b.badge);
+        if(configuredRankA!==configuredRankB) return configuredRankA-configuredRankB;
+        return a.name.localeCompare(b.name);
+      });
+    const configuredIds=new Set(configuredModels.map(m=>m.value));
     // Clear and rebuild
     dd.innerHTML='';
     // Add search and custom elements first (CRITICAL: must be before models)
+    dd.appendChild(_scopeNote);
     dd.appendChild(_searchRow);
     dd.appendChild(_custSep);
     dd.appendChild(_custRow);
-    // Add models matching filter
-    let _lastGroup=null;
-    for(const m of _modelData){
-      if(!term||found.has(m.value)){
-        if(m.group&&m.group!==_lastGroup){
-          const heading=document.createElement('div');
-          heading.className='model-group';
-          heading.textContent=m.group;
-          dd.appendChild(heading);
-          _lastGroup=m.group;
-        }
+    if(configuredModels.length){
+      const configuredHeading=document.createElement('div');
+      configuredHeading.className='model-group';
+      configuredHeading.textContent=t('model_group_configured')||'Configured';
+      dd.appendChild(configuredHeading);
+      for(const m of configuredModels){
         const row=document.createElement('div');
         row.className='model-opt'+(m.value===sel.value?' active':'');
-        row.innerHTML=`<span class="model-opt-name">${m.name}</span><span class="model-opt-id">${m.id}</span>`;
+        const badgeHtml=m.badge?`<span class="model-opt-badge model-opt-badge--${esc(m.badge.role||'configured')}">${esc(m.badge.label||'Configured')}</span>`:'';
+        row.innerHTML=`<div class="model-opt-top"><span class="model-opt-name">${m.name}</span>${badgeHtml}</div><span class="model-opt-id">${m.id}</span>`;
         row.onclick=()=>selectModelFromDropdown(m.value);
         dd.appendChild(row);
       }
+    }
+    // Add remaining models matching filter
+    let _lastGroup=null;
+    for(const m of _modelData){
+      if(configuredIds.has(m.value)||!matches(m)) continue;
+      if(m.group&&m.group!==_lastGroup){
+        const heading=document.createElement('div');
+        heading.className='model-group';
+        heading.textContent=m.group;
+        dd.appendChild(heading);
+        _lastGroup=m.group;
+      }
+      const row=document.createElement('div');
+      row.className='model-opt'+(m.value===sel.value?' active':'');
+      const badgeHtml=m.badge?`<span class="model-opt-badge model-opt-badge--${esc(m.badge.role||'configured')}">${esc(m.badge.label||'Configured')}</span>`:'';
+      row.innerHTML=`<div class="model-opt-top"><span class="model-opt-name">${m.name}</span>${badgeHtml}</div><span class="model-opt-id">${m.id}</span>`;
+      row.onclick=()=>selectModelFromDropdown(m.value);
+      dd.appendChild(row);
     }
     // Show "No results" if filtered and nothing matched
     if(term&&found.size===0){
@@ -423,6 +728,7 @@ function renderModelDropdown(){
   _ci.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();_applyCustom();}if(e.key==='Escape'){closeModelDropdown();}});
   _ci.addEventListener('click',e=>e.stopPropagation());
   // Add search and custom elements to dropdown (initial render)
+  dd.appendChild(_scopeNote);
   dd.appendChild(_searchRow);
   dd.appendChild(_custSep);
   dd.appendChild(_custRow);
@@ -460,21 +766,30 @@ function toggleModelDropdown(){
   if(typeof closeProfileDropdown==='function') closeProfileDropdown();
   if(typeof closeWsDropdown==='function') closeWsDropdown();
   if(typeof closeReasoningDropdown==='function') closeReasoningDropdown();
+  if(typeof closeToolsetsDropdown==='function') closeToolsetsDropdown();
   renderModelDropdown();
   dd.classList.add('open');
   _positionModelDropdown();
   chip.classList.add('active');
+  const mobileAction=$('composerMobileModelAction');
+  if(mobileAction) mobileAction.classList.add('active');
 }
 
 function closeModelDropdown(){
   const dd=$('composerModelDropdown');
   const chip=$('composerModelChip');
+  const mobileAction=$('composerMobileModelAction');
   if(dd) dd.classList.remove('open');
   if(chip) chip.classList.remove('active');
+  if(mobileAction) mobileAction.classList.remove('active');
 }
 
 document.addEventListener('click',e=>{
-  if(!e.target.closest('#composerModelChip') && !e.target.closest('#composerModelDropdown')) closeModelDropdown();
+  if(
+    !e.target.closest('#composerModelChip') &&
+    !e.target.closest('#composerMobileModelAction') &&
+    !e.target.closest('#composerModelDropdown')
+  ) closeModelDropdown();
 });
 window.addEventListener('resize',()=>{
   const dd=$('composerModelDropdown');
@@ -506,14 +821,20 @@ function _applyReasoningChip(eff){
   const wrap=$('composerReasoningWrap');
   const label=$('composerReasoningLabel');
   const chip=$('composerReasoningChip');
+  const mobileLabel=$('composerMobileReasoningLabel');
+  const mobileAction=$('composerMobileReasoningAction');
   if(!wrap||!label) return;
   wrap.style.display='';
-  label.textContent=_formatReasoningEffortLabel(effort);
+  if(mobileAction) mobileAction.style.display='';
+  const text=_formatReasoningEffortLabel(effort);
+  label.textContent=text;
+  if(mobileLabel) mobileLabel.textContent=text;
   if(chip){
     const inactive=!effort||effort==='none';
     chip.classList.toggle('inactive',inactive);
-    chip.title='Reasoning effort: '+_formatReasoningEffortLabel(effort);
+    chip.title='Reasoning effort: '+text;
   }
+  if(mobileAction) mobileAction.classList.toggle('inactive',!effort||effort==='none');
   _highlightReasoningOption(effort);
 }
 
@@ -545,18 +866,24 @@ function toggleReasoningDropdown(){
   if(typeof closeProfileDropdown==='function') closeProfileDropdown();
   if(typeof closeWsDropdown==='function') closeWsDropdown();
   closeModelDropdown();
+  if(typeof closeToolsetsDropdown==='function') closeToolsetsDropdown();
   _highlightReasoningOption(_currentReasoningEffort);
   dd.classList.add('open');
   _positionReasoningDropdown();
   chip.classList.add('active');
+  const mobileAction=$('composerMobileReasoningAction');
+  if(mobileAction) mobileAction.classList.add('active');
 }
 
 function _positionReasoningDropdown(){
   const dd=$('composerReasoningDropdown');
   const chip=$('composerReasoningChip');
+  const mobileAction=$('composerMobileReasoningAction');
   const footer=document.querySelector('.composer-footer');
   if(!dd||!chip||!footer) return;
-  const chipRect=chip.getBoundingClientRect();
+  const panel=$('composerMobileConfigPanel');
+  const anchor=(panel&&panel.classList.contains('open')&&mobileAction)?mobileAction:chip;
+  const chipRect=anchor.getBoundingClientRect();
   const footerRect=footer.getBoundingClientRect();
   let left=chipRect.left-footerRect.left;
   const maxLeft=Math.max(0,footer.clientWidth-dd.offsetWidth);
@@ -567,12 +894,18 @@ function _positionReasoningDropdown(){
 function closeReasoningDropdown(){
   const dd=$('composerReasoningDropdown');
   const chip=$('composerReasoningChip');
+  const mobileAction=$('composerMobileReasoningAction');
   if(dd) dd.classList.remove('open');
   if(chip) chip.classList.remove('active');
+  if(mobileAction) mobileAction.classList.remove('active');
 }
 
 document.addEventListener('click',function(e){
-  if(!e.target.closest('#composerReasoningChip')&&!e.target.closest('#composerReasoningDropdown')) closeReasoningDropdown();
+  if(
+    !e.target.closest('#composerReasoningChip') &&
+    !e.target.closest('#composerMobileReasoningAction') &&
+    !e.target.closest('#composerReasoningDropdown')
+  ) closeReasoningDropdown();
   if(e.target.closest('.reasoning-option')){
     const opt=e.target.closest('.reasoning-option');
     const effort=opt&&opt.dataset.effort;
@@ -588,15 +921,258 @@ document.addEventListener('click',function(e){
   }
 });
 
+// ── Session toolsets chip (#493) ───────────────────────────────────────────
+let _currentSessionToolsets = null; // null = global, array = custom list
+
+function _applyToolsetsChip(toolsets) {
+  _currentSessionToolsets = toolsets;
+  const wrap = $('composerToolsetsWrap');
+  const label = $('composerToolsetsLabel');
+  const chip = $('composerToolsetsChip');
+  if (!wrap || !label) return;
+  // Visibility is controlled entirely by responsive CSS — the chip shows only
+  // at wide composer-footer widths (>= 1100px container query). At narrower
+  // widths the layout is too cramped (model + reasoning + profile + workspace
+  // + context-ring + send) to add another chip. Cleared inline style so the
+  // CSS @container query is the single source of truth. State is still
+  // tracked so /api/session/toolsets continues to work for cron/scripted
+  // callers regardless of UI visibility. (#1431)
+  wrap.style.display = '';
+  const hasCustom = Array.isArray(toolsets) && toolsets.length > 0;
+  if (hasCustom) {
+    label.textContent = toolsets.join(', ');
+    chip.classList.add('has-custom');
+    chip.title = t('session_toolsets') + ': ' + toolsets.join(', ');
+  } else {
+    label.textContent = t('session_toolsets_global');
+    chip.classList.remove('has-custom');
+    chip.title = t('session_toolsets');
+  }
+}
+
+function _syncToolsetsChip() {
+  if (typeof S === 'undefined' || !S || !S.session) {
+    _applyToolsetsChip(null);
+    return;
+  }
+  _applyToolsetsChip(S.session.enabled_toolsets || null);
+}
+
+function syncToolsetsChip() {
+  _syncToolsetsChip();
+}
+
+function _populateToolsetsDropdown() {
+  const desc = $('toolsetsDropdownDesc');
+  const state = $('toolsetsDropdownState');
+  const input = $('toolsetsInput');
+  const applyBtn = $('toolsetsApplyBtn');
+  const clearBtn = $('toolsetsClearBtn');
+  if (!desc || !state || !input) return;
+  desc.textContent = t('session_toolsets_desc');
+  if (applyBtn) applyBtn.textContent = t('session_toolsets_apply');
+  if (clearBtn) clearBtn.textContent = t('session_toolsets_clear');
+  input.placeholder = t('session_toolsets_placeholder');
+  // Escape key handler for toolsets input
+  input.onkeydown = function(e) { if(e.key === 'Escape') closeToolsetsDropdown(); };
+  const hasCustom = Array.isArray(_currentSessionToolsets) && _currentSessionToolsets.length > 0;
+  if (hasCustom) {
+    state.textContent = '🔧 ' + _currentSessionToolsets.join(', ');
+    input.value = _currentSessionToolsets.join(', ');
+  } else {
+    state.textContent = '🌍 ' + t('session_toolsets_global');
+    input.value = '';
+  }
+}
+
+function _positionToolsetsDropdown() {
+  const dd = $('composerToolsetsDropdown');
+  const chip = $('composerToolsetsChip');
+  const footer = document.querySelector('.composer-footer');
+  if (!dd || !chip || !footer) return;
+  // Defense: if the chip has been hidden by responsive CSS (e.g. resize across
+  // 1100px container threshold while dropdown was open), don't try to anchor
+  // to a zero-rect element — close the dropdown instead. (#1431)
+  if (chip.offsetParent === null) { closeToolsetsDropdown(); return; }
+  const chipRect = chip.getBoundingClientRect();
+  const footerRect = footer.getBoundingClientRect();
+  let left = chipRect.left - footerRect.left;
+  const maxLeft = Math.max(0, footer.clientWidth - dd.offsetWidth);
+  left = Math.max(0, Math.min(left, maxLeft));
+  dd.style.left = left + 'px';
+}
+
+function toggleToolsetsDropdown() {
+  const dd = $('composerToolsetsDropdown');
+  const chip = $('composerToolsetsChip');
+  if (!dd || !chip) return;
+  if (typeof S === 'undefined' || !S || !S.session) return;
+  // Don't open when the chip itself is hidden by responsive CSS (#1431).
+  // offsetParent === null catches display:none on the element or any ancestor.
+  if (chip.offsetParent === null) return;
+  const open = dd.classList.contains('open');
+  if (open) { closeToolsetsDropdown(); return; }
+  if (typeof closeProfileDropdown === 'function') closeProfileDropdown();
+  if (typeof closeWsDropdown === 'function') closeWsDropdown();
+  closeModelDropdown();
+  if (typeof closeReasoningDropdown === 'function') closeReasoningDropdown();
+  _syncToolsetsChip();
+  _populateToolsetsDropdown();
+  dd.classList.add('open');
+  _positionToolsetsDropdown();
+  chip.classList.add('active');
+  // Focus the input after a tick so the layout has settled
+  setTimeout(() => { const inp = $('toolsetsInput'); if (inp) inp.focus(); }, 50);
+}
+
+function closeToolsetsDropdown() {
+  const dd = $('composerToolsetsDropdown');
+  const chip = $('composerToolsetsChip');
+  if (dd) dd.classList.remove('open');
+  if (chip) chip.classList.remove('active');
+}
+
+function _applySessionToolsets(toolsets) {
+  if (typeof S === 'undefined' || !S || !S.session) return;
+  const sid = S.session.session_id;
+  api('/api/session/toolsets', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sid, toolsets: toolsets })
+  })
+    .then(function(r) {
+      if (r && r.ok) {
+        S.session.enabled_toolsets = r.enabled_toolsets || null;
+        _applyToolsetsChip(r.enabled_toolsets || null);
+        if (r.enabled_toolsets && r.enabled_toolsets.length) {
+          showToast('🔧 ' + t('session_toolsets_applied') + ': ' + r.enabled_toolsets.join(', '));
+        } else {
+          showToast('🌍 ' + t('session_toolsets_cleared'));
+        }
+      } else {
+        showToast(t('session_toolsets_failed') + (r && r.error ? r.error : 'Unknown error'), 3000, 'error');
+      }
+    })
+    .catch(function(err) {
+      showToast(t('session_toolsets_failed') + (err.message || err), 3000, 'error');
+    });
+}
+
+// Click-outside handler for toolsets dropdown
+document.addEventListener('click', function(e) {
+  if (
+    !e.target.closest('#composerToolsetsChip') &&
+    !e.target.closest('#composerToolsetsDropdown')
+  ) closeToolsetsDropdown();
+  // Apply button
+  if (e.target.closest('#toolsetsApplyBtn')) {
+    const input = $('toolsetsInput');
+    if (!input) return;
+    const raw = input.value.trim();
+    if (!raw) {
+      showToast(t('session_toolsets_desc'), 2000);
+      return;
+    }
+    const toolsets = raw.split(',').map(s => s.trim()).filter(Boolean);
+    if (toolsets.length === 0) {
+      showToast(t('session_toolsets_desc'), 2000);
+      return;
+    }
+    _applySessionToolsets(toolsets);
+    closeToolsetsDropdown();
+  }
+  // Clear button
+  if (e.target.closest('#toolsetsClearBtn')) {
+    _applySessionToolsets(null);
+    closeToolsetsDropdown();
+  }
+});
+
+// Position toolsets dropdown on resize, OR close it if the chip is no longer
+// visible (e.g. resize crossed the 1100px container threshold while dropdown
+// was open — the wrap is hidden by CSS but the dropdown sibling stays open
+// without an anchor). (#1431)
+window.addEventListener('resize', () => {
+  const dd = $('composerToolsetsDropdown');
+  if (!dd || !dd.classList.contains('open')) return;
+  const chip = $('composerToolsetsChip');
+  if (!chip || chip.offsetParent === null) { closeToolsetsDropdown(); return; }
+  _positionToolsetsDropdown();
+});
+
+function _syncMobileComposerConfigButton(open){
+  const btn=$('composerMobileConfigBtn');
+  if(!btn) return;
+  btn.classList.toggle('active',!!open);
+  btn.setAttribute('aria-expanded',open?'true':'false');
+}
+
+function closeMobileComposerConfig(){
+  const panel=$('composerMobileConfigPanel');
+  if(panel) panel.classList.remove('open');
+  _syncMobileComposerConfigButton(false);
+  if(typeof closeWsDropdown==='function') closeWsDropdown();
+}
+
+function toggleMobileComposerConfig(){
+  const panel=$('composerMobileConfigPanel');
+  if(!panel) return;
+  const open=panel.classList.contains('open');
+  if(open){
+    closeMobileComposerConfig();
+    closeModelDropdown();
+    closeReasoningDropdown();
+    if(typeof closeToolsetsDropdown==='function') closeToolsetsDropdown();
+    return;
+  }
+  if(typeof closeProfileDropdown==='function') closeProfileDropdown();
+  if(typeof closeWsDropdown==='function') closeWsDropdown();
+  closeModelDropdown();
+  closeReasoningDropdown();
+  if(typeof closeToolsetsDropdown==='function') closeToolsetsDropdown();
+  panel.classList.add('open');
+  _syncMobileComposerConfigButton(true);
+}
+
+document.addEventListener('click',function(e){
+  if(
+    e.target.closest('#composerMobileConfigBtn') ||
+    e.target.closest('#composerMobileConfigPanel') ||
+    e.target.closest('#composerWsDropdown') ||
+    e.target.closest('#composerModelDropdown') ||
+    e.target.closest('#composerReasoningDropdown')
+  ) return;
+  closeMobileComposerConfig();
+});
+
+document.addEventListener('keydown',function(e){
+  if(e.key!=='Escape') return;
+  const panel=$('composerMobileConfigPanel');
+  if(!panel||!panel.classList.contains('open')) return;
+  e.preventDefault();
+  closeMobileComposerConfig();
+  if(typeof closeWsDropdown==='function') closeWsDropdown();
+  closeModelDropdown();
+  closeReasoningDropdown();
+});
+
+window.addEventListener('resize',function(){
+  if(window.matchMedia && !window.matchMedia('(max-width: 640px)').matches){
+    closeMobileComposerConfig();
+    closeModelDropdown();
+    closeReasoningDropdown();
+    if(typeof closeWsDropdown==='function') closeWsDropdown();
+  }
+});
+
 // ── Scroll pinning ──────────────────────────────────────────────────────────
 // When streaming, auto-scroll only if the user hasn't manually scrolled up.
-// Once the user scrolls back to within 150px of the bottom, re-pin.
+// Once the user scrolls back to within 250px of the bottom, re-pin.
 let _scrollPinned=true;
 (function(){
   const el=document.getElementById('messages');
   if(!el) return;
   el.addEventListener('scroll',()=>{
-    const nearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<150;
+    const nearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<250;
     _scrollPinned=nearBottom;
     const btn=$('scrollToBottomBtn');
     if(btn) btn.style.display=_scrollPinned?'none':'flex';
@@ -608,23 +1184,112 @@ let _scrollPinned=true;
 })();
 function _fmtTokens(n){if(!n||n<0)return'0';if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'k';return String(n);}
 
+const _MOBILE_CONFIG_BASE_LABEL='Workspace, model, reasoning, and context settings';
+
+function _setCtxCompressButton(btn,text){
+  if(!btn)return;
+  if(text){
+    btn.style.display='';
+    btn.textContent=text;
+    btn.onclick=function(e){
+      if(e)e.stopPropagation();
+      const ta=$('msg');
+      if(ta){ta.value='/compress ';ta.focus();autoResize();}
+    };
+  }else{
+    btn.style.display='none';
+    btn.textContent='';
+    btn.onclick=null;
+  }
+}
+
+function _syncMobileCtxDisplay(state){
+  const badge=$('composerMobileCtxBadge');
+  const mobileConfigBtn=$('composerMobileConfigBtn');
+  const row=$('composerMobileContextAction');
+  const usageLine=$('composerMobileContextUsage');
+  const tokensLine=$('composerMobileContextTokens');
+  const thresholdLine=$('composerMobileContextThreshold');
+  const costLine=$('composerMobileContextCost');
+  const compressBtn=$('composerMobileCtxCompressBtn');
+  if(!state||!state.visible){
+    if(badge)badge.style.display='none';
+    if(row)row.style.display='none';
+    if(mobileConfigBtn){
+      mobileConfigBtn.setAttribute('aria-label',_MOBILE_CONFIG_BASE_LABEL);
+      mobileConfigBtn.setAttribute('title',_MOBILE_CONFIG_BASE_LABEL);
+    }
+    _setCtxCompressButton(compressBtn,'');
+    return;
+  }
+  if(badge){
+    badge.style.display='inline-flex';
+    badge.textContent=state.hasPromptTok?String(state.pct):'\u00b7';
+    badge.classList.toggle('ctx-mid',state.pct>50&&state.pct<=75);
+    badge.classList.toggle('ctx-high',state.pct>75);
+    badge.setAttribute('title',state.label);
+  }
+  if(mobileConfigBtn){
+    mobileConfigBtn.setAttribute('aria-label',`${_MOBILE_CONFIG_BASE_LABEL}; ${state.label}`);
+    mobileConfigBtn.setAttribute('title',`${_MOBILE_CONFIG_BASE_LABEL} \u00b7 ${state.label}`);
+  }
+  if(row){
+    row.style.display='';
+    row.setAttribute('aria-label',state.label);
+    row.classList.toggle('ctx-mid',state.pct>50&&state.pct<=75);
+    row.classList.toggle('ctx-high',state.pct>75);
+  }
+  if(usageLine)usageLine.textContent=state.usageText||'';
+  if(tokensLine)tokensLine.textContent=state.tokensText||'';
+  if(thresholdLine){
+    if(state.thresholdText){
+      thresholdLine.style.display='';
+      thresholdLine.textContent=state.thresholdText;
+    }else{
+      thresholdLine.style.display='none';
+      thresholdLine.textContent='';
+    }
+  }
+  if(costLine){
+    if(state.costText){
+      costLine.style.display='';
+      costLine.textContent=state.costText;
+    }else{
+      costLine.style.display='none';
+      costLine.textContent='';
+    }
+  }
+  _setCtxCompressButton(compressBtn,state.compressText||'');
+}
+
 // Context usage indicator in composer footer
 function _syncCtxIndicator(usage){
   const wrap=$('ctxIndicatorWrap');
   const el=$('ctxIndicator');
   if(!el)return;
-  const promptTok=usage.last_prompt_tokens||usage.input_tokens||0;
+  // #1436: Use last_prompt_tokens only — NEVER fall back to cumulative
+  // input_tokens for the "context window % used" calculation.  input_tokens
+  // is summed across all turns, so dividing it by the context window gives a
+  // nonsense percentage (often >100%) on long sessions.  When we have no
+  // last-prompt data we render "·" + "tokens used" via the !hasPromptTok
+  // branch below — honest "no data" instead of misleading "890% used".
+  const promptTok=usage.last_prompt_tokens||0;
   const totalTok=(usage.input_tokens||0)+(usage.output_tokens||0);
-  const ctxWindow=usage.context_length||0;
+  // Default context window to 128K when not provided by backend
+  const DEFAULT_CTX=128*1024;
+  const ctxWindow=usage.context_length||DEFAULT_CTX;
   const cost=usage.estimated_cost;
   // Show indicator whenever we have any usage data (tokens or cost)
   if(!promptTok&&!totalTok&&!cost){
     if(wrap) wrap.style.display='none';
+    _syncMobileCtxDisplay({visible:false});
     return;
   }
   if(wrap) wrap.style.display='';
-  const hasCtxWindow=!!(promptTok&&ctxWindow);
-  const pct=hasCtxWindow?Math.min(100,Math.round((promptTok/ctxWindow)*100)):0;
+  const hasPromptTok=!!promptTok;
+  const rawPct=hasPromptTok?Math.round((promptTok/ctxWindow)*100):0;
+  const pct=Math.min(100,rawPct);
+  const overflowed=rawPct>100;
   const ring=$('ctxRingValue');
   const center=$('ctxPercent');
   const usageLine=$('ctxTooltipUsage');
@@ -636,34 +1301,85 @@ function _syncCtxIndicator(usage){
     ring.style.strokeDasharray=String(circumference);
     ring.style.strokeDashoffset=String(circumference*(1-pct/100));
   }
-  if(center) center.textContent=hasCtxWindow?String(pct):'\u00b7';
+  if(center) center.textContent=hasPromptTok?String(pct):'\u00b7';
+  const hasExplicitCtx=!!usage.context_length;
   el.classList.toggle('ctx-mid',pct>50&&pct<=75);
   el.classList.toggle('ctx-high',pct>75);
-  let label=hasCtxWindow?`Context window ${pct}% used`:`${_fmtTokens(totalTok)} tokens used`;
+  // ── Compress affordance (#524) ──
+  // Show a hint in the tooltip when context usage is high so users
+  // discover /compress without having to know the slash command.
+  const compressWrap=$('ctxTooltipCompress');
+  const compressBtn=$('ctxCompressBtn');
+  const compressText=pct>=75?t('ctx_compress_action'):(pct>=50?t('ctx_compress_hint'):'');
+  if(compressWrap) compressWrap.style.display=compressText?'':'none';
+  _setCtxCompressButton(compressBtn,compressText);
+  let label=hasPromptTok?`Context window ${pct}% used`:`${_fmtTokens(totalTok)} tokens used`;
+  if(!hasExplicitCtx&&hasPromptTok) label+=' (est. 128K)';
   if(cost) label+=` \u00b7 $${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`;
   el.setAttribute('aria-label',label);
-  if(usageLine) usageLine.textContent=hasCtxWindow?`${pct}% used (${Math.max(0,100-pct)}% left)`:`${_fmtTokens(totalTok)} tokens used`;
-  if(tokensLine) tokensLine.textContent=hasCtxWindow?`${_fmtTokens(promptTok)} / ${_fmtTokens(ctxWindow)} tokens used`:`In: ${_fmtTokens(usage.input_tokens||0)} \u00b7 Out: ${_fmtTokens(usage.output_tokens||0)}`;
+  const usageText=hasPromptTok?(overflowed?`${rawPct}% used (context exceeded)`:`${pct}% used (${100-pct}% left)`):`${_fmtTokens(totalTok)} tokens used`;
+  const tokensText=hasPromptTok?`${_fmtTokens(promptTok)} / ${_fmtTokens(ctxWindow)} tokens used`:`In: ${_fmtTokens(usage.input_tokens||0)} \u00b7 Out: ${_fmtTokens(usage.output_tokens||0)}`;
+  if(usageLine) usageLine.textContent=usageText;
+  if(tokensLine) tokensLine.textContent=tokensText;
   const threshold=usage.threshold_tokens||0;
+  let thresholdText='';
   if(thresholdLine){
     if(threshold&&ctxWindow){
+      thresholdText=`Auto-compress at ${_fmtTokens(threshold)} (${Math.round(threshold/ctxWindow*100)}%)`;
       thresholdLine.style.display='';
-      thresholdLine.textContent=`Auto-compress at ${_fmtTokens(threshold)} (${Math.round(threshold/ctxWindow*100)}%)`;
+      thresholdLine.textContent=thresholdText;
     }else{
       thresholdLine.style.display='none';
       thresholdLine.textContent='';
     }
   }
+  let costText='';
   if(costLine){
     if(cost){
+      costText=`Estimated cost: $${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`;
       costLine.style.display='';
-      costLine.textContent=`Estimated cost: $${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`;
+      costLine.textContent=costText;
     }else{
       costLine.style.display='none';
       costLine.textContent='';
     }
   }
+  _syncMobileCtxDisplay({
+    visible:true,
+    hasPromptTok,
+    pct,
+    label,
+    usageText,
+    tokensText,
+    thresholdText,
+    costText,
+    compressText
+  });
 }
+
+// ── Touch support: toggle context tooltip on tap (#524) ──
+// On mobile, hover doesn't work — allow tap on the context ring button
+// to toggle the tooltip visibility so the compress affordance is reachable.
+document.addEventListener('DOMContentLoaded',function(){
+  const wrap=document.getElementById('ctxIndicatorWrap');
+  const tooltip=document.getElementById('ctxTooltip');
+  if(!wrap||!tooltip)return;
+  const btn=document.getElementById('ctxIndicator');
+  if(!btn)return;
+  btn.addEventListener('click',function(e){
+    e.stopPropagation();
+    const isOpen=tooltip.classList.contains('ctx-tooltip-active');
+    tooltip.classList.toggle('ctx-tooltip-active',!isOpen);
+    tooltip.setAttribute('aria-hidden',String(isOpen));
+  });
+  // Close on outside tap
+  document.addEventListener('click',function(){
+    tooltip.classList.remove('ctx-tooltip-active');
+    tooltip.setAttribute('aria-hidden','true');
+  },{passive:true});
+  // Prevent tooltip click from closing itself
+  tooltip.addEventListener('click',function(e){e.stopPropagation();});
+});
 
 function scrollIfPinned(){
   if(!_scrollPinned) return;
@@ -700,7 +1416,7 @@ function getModelLabel(modelId){
   // Check dynamic labels first, then fall back to splitting the ID
   if(_dynamicModelLabels[modelId]) return _dynamicModelLabels[modelId];
   // Static fallback for common models
-  const STATIC_LABELS={'openai/gpt-5.4-mini':'GPT-5.4 Mini','openai/gpt-4o':'GPT-4o','openai/o3':'o3','openai/o4-mini':'o4-mini','anthropic/claude-sonnet-4.6':'Sonnet 4.6','anthropic/claude-sonnet-4-5':'Sonnet 4.5','anthropic/claude-haiku-3-5':'Haiku 3.5','google/gemini-3.1-pro-preview':'Gemini 3.1 Pro','google/gemini-3-flash-preview':'Gemini 3 Flash','google/gemini-3.1-flash-lite-preview':'Gemini 3.1 Flash Lite','google/gemini-2.5-pro':'Gemini 2.5 Pro','google/gemini-2.5-flash':'Gemini 2.5 Flash','deepseek/deepseek-chat-v3-0324':'DeepSeek V3','meta-llama/llama-4-scout':'Llama 4 Scout'};
+  const STATIC_LABELS={'openai/gpt-5.4-mini':'GPT-5.4 Mini','openai/gpt-4o':'GPT-4o','openai/o3':'o3','openai/o4-mini':'o4-mini','anthropic/claude-sonnet-4.6':'Sonnet 4.6','anthropic/claude-sonnet-4-5':'Sonnet 4.5','anthropic/claude-haiku-3-5':'Haiku 3.5','google/gemini-3.1-pro-preview':'Gemini 3.1 Pro','google/gemini-3-flash-preview':'Gemini 3 Flash','google/gemini-3.1-flash-lite-preview':'Gemini 3.1 Flash Lite','google/gemini-2.5-pro':'Gemini 2.5 Pro','google/gemini-2.5-flash':'Gemini 2.5 Flash','deepseek/deepseek-v4-flash':'DeepSeek V4 Flash','deepseek/deepseek-v4-pro':'DeepSeek V4 Pro','deepseek/deepseek-chat-v3-0324':'DeepSeek V3 (legacy)','meta-llama/llama-4-scout':'Llama 4 Scout'};
   if(STATIC_LABELS[modelId]) return STATIC_LABELS[modelId];
   // Safe Ollama-tag fallback formatter before generic split('/').pop()
   let _last = modelId.split('/').pop() || modelId;
@@ -835,19 +1551,58 @@ function renderMd(raw){
   // breaking </pre> closure and corrupting all subsequent message rendering.
   const _preBlock_stash=[];
   const fence_stash=[];
-  s=s.replace(/```([\s\S]*?)```/g,(_,raw)=>{
+  // CommonMark §4.5: opening fence must start a line (with up to 3 spaces of indent)
+  // and closing fence must also start a line. Without line anchoring, a literal ``` inside
+  // a code block (e.g. a regex pattern with ``` in a lookbehind, a script that documents
+  // fences) terminates the outer block at the wrong place, leaking content into the
+  // markdown stream where bold/italic/inline-code passes corrupt it. Fixes #1438.
+  s=s.replace(/(^|\n)[ ]{0,3}```(?:([\s\S]*?)\n)?[ ]{0,3}```(?=\n|$)/g,(_,lead,raw)=>{
     const m=raw.match(/^(\w[\w+-]*)\n?([\s\S]*)$/);
-    if(m&&m[1].trim().toLowerCase()==='mermaid'){
+    const lang=m?(m[1]||'').trim().toLowerCase():'';
+    const code=m?m[2]:raw.replace(/^\n?/,'');
+    const codeLines=code.split('\n');
+    const firstCodeLine=codeLines.find(line=>line.trim())||'';
+    const firstMermaidLine=codeLines.map(line=>line.trim()).find(line=>line&&!line.startsWith('%%'))||'';
+    const looksLikeLineNumberedToolOutput=/^\s*\d+\|/.test(firstCodeLine);
+    const looksLikeMermaidStart=firstMermaidLine==='---'||/^(graph|flowchart|sequenceDiagram|classDiagram|classDiagram-v2|stateDiagram|stateDiagram-v2|erDiagram|journey|gantt|pie|gitGraph|mindmap|timeline|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic|c4Context|c4Container|c4Component|c4Dynamic|sankey-beta|block-beta|packet-beta|xychart-beta|kanban|architecture-beta)\b/.test(firstMermaidLine);
+    if(lang==='mermaid'&&!looksLikeLineNumberedToolOutput&&looksLikeMermaidStart){
       const id='mermaid-'+Math.random().toString(36).slice(2,10);
-      _preBlock_stash.push(`<div class="mermaid-block" data-mermaid-id="${id}">${esc(m[2].trim())}</div>`);
+      _preBlock_stash.push(`<div class="mermaid-block" data-mermaid-id="${id}">${esc(code.trim())}</div>`);
     } else {
-      const lang=m?(m[1]||'').trim().toLowerCase():'';
-      const code=m?m[2]:raw.replace(/^\n?/,'');
       const h=lang?`<div class="pre-header">${esc(lang)}</div>`:'';
       const langAttr=lang?` class="language-${esc(lang)}"`:'';
-      _preBlock_stash.push(`${h}<pre><code${langAttr}>${esc(code.replace(/\n$/,''))}</code></pre>`);
+      // For diff/patch blocks, wrap each line in a colored span
+      if(lang==='diff'||lang==='patch'){
+        const colored=esc(code.replace(/\n$/,'')).split('\n').map(line=>{
+          if(line.startsWith('@@')) return `<span class="diff-line diff-hunk">${line}</span>`;
+          if(line.startsWith('+')) return `<span class="diff-line diff-plus">${line}</span>`;
+          if(line.startsWith('-')) return `<span class="diff-line diff-minus">${line}</span>`;
+          return `<span class="diff-line">${line}</span>`;
+        }).join('\n');
+        _preBlock_stash.push(`${h}<pre class="diff-block"><code${langAttr}>${colored}</code></pre>`);
+      // For JSON/YAML blocks, add tree-view placeholder with raw data
+      } else if(lang==='json'||lang==='yaml'){
+        const rawCode=esc(code.replace(/\n$/,''));
+        // Encode newlines as &#10; to prevent HTML attribute normalization
+        // (browsers collapse \n to spaces inside attribute values).
+        const rawAttr=rawCode.replace(/"/g,'&quot;').replace(/\n/g,'&#10;');
+        const blockId='tree-'+Math.random().toString(36).slice(2,10);
+        _preBlock_stash.push(`<div class="code-tree-wrap" data-raw="${rawAttr}" data-lang="${lang}" id="${blockId}">${h}<pre class="tree-raw-view"><code${langAttr}>${rawCode}</code></pre></div>`);
+      // CSV blocks → render as styled table
+      } else if(lang==='csv'){
+        const rows=code.replace(/\n$/,'').split('\n').filter(r=>r.trim());
+        if(rows.length>=2){
+          const headers=rows[0].split(',').map(c=>c.trim());
+          const body=rows.slice(1).map(r=>'<tr>'+r.split(',').map(c=>`<td>${esc(c.trim())}</td>`).join('')+'</tr>').join('');
+          _preBlock_stash.push(`${h}<div class="csv-table-wrap"><table class="csv-table"><thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>`);
+        } else {
+          _preBlock_stash.push(`${h}<pre><code${langAttr}>${esc(code.replace(/\n$/,''))}</code></pre>`);
+        }
+      } else {
+        _preBlock_stash.push(`${h}<pre><code${langAttr}>${esc(code.replace(/\n$/,''))}</code></pre>`);
+      }
     }
-    return '\x00P'+(_preBlock_stash.length-1)+'\x00';
+    return lead+'\x00P'+(_preBlock_stash.length-1)+'\x00';
   });
   s=s.replace(/`([^`\n]+)`/g,(_,c)=>{fence_stash.push('<code>'+esc(c)+'</code>');return '\x00F'+(fence_stash.length-1)+'\x00';});
   // Math stash: protect $$..$$ and $..$ from markdown processing
@@ -919,7 +1674,7 @@ function renderMd(raw){
   s=s.replace(/\*([^*\n]+)\*/g,(_,t)=>`<em>${esc(t)}</em>`);
   s=s.replace(/~~(.+?)~~/g,(_,t)=>`<del>${esc(t)}</del>`);
   s=s.replace(/\x00O(\d+)\x00/g,(_,i)=>_ob_stash[+i]);
-  s=s.replace(/^### (.+)$/gm,(_,t)=>`<h3>${inlineMd(t)}</h3>`).replace(/^## (.+)$/gm,(_,t)=>`<h2>${inlineMd(t)}</h2>`).replace(/^# (.+)$/gm,(_,t)=>`<h1>${inlineMd(t)}</h1>`);
+  s=s.replace(/^###### (.+)$/gm,(_,t)=>`<h6>${inlineMd(t)}</h6>`).replace(/^##### (.+)$/gm,(_,t)=>`<h5>${inlineMd(t)}</h5>`).replace(/^#### (.+)$/gm,(_,t)=>`<h4>${inlineMd(t)}</h4>`).replace(/^### (.+)$/gm,(_,t)=>`<h3>${inlineMd(t)}</h3>`).replace(/^## (.+)$/gm,(_,t)=>`<h2>${inlineMd(t)}</h2>`).replace(/^# (.+)$/gm,(_,t)=>`<h1>${inlineMd(t)}</h1>`);
   s=s.replace(/^---+$/gm,'<hr>');
   // (Blockquotes are handled by the pre-pass at the top of renderMd, before
   // fence_stash. The per-line passes below never see > prefixes.)
@@ -1104,6 +1859,24 @@ function renderMd(raw){
   // ── Restore MEDIA stash → inline images or download links ─────────────────
   s=s.replace(/\x00D(\d+)\x00/g,(_,i)=>{
     const ref=media_stash[+i];
+    // Keep this logic self-contained: some tests extract renderMd() alone and
+    // execute it in node, without the top-level helper functions from ui.js.
+    const mediaKindForName=(name='')=>{
+      const clean=String(name||'').split('?')[0].toLowerCase();
+      if(/\.(mp3|wav|m4a|aac|ogg|oga|opus|flac)$/i.test(clean)) return 'audio';
+      if(/\.(mp4|mov|m4v|webm|ogv|avi|mkv)$/i.test(clean)) return 'video';
+      if(_IMAGE_EXTS.test(clean)) return 'image';
+      return '';
+    };
+    const mediaPlayerHtml=(kind,src,name)=>{
+      if(typeof _mediaPlayerHtml==='function') return _mediaPlayerHtml(kind,src,name);
+      const safeName=esc(name||kind||'media');
+      const safeSrc=esc(src);
+      const tag=kind==='video'
+        ? `<video class="msg-media-player msg-media-video" src="${safeSrc}" controls preload="metadata" playsinline title="${safeName}"></video>`
+        : `<audio class="msg-media-player msg-media-audio" src="${safeSrc}" controls preload="metadata" title="${safeName}"></audio>`;
+      return `<div class="msg-media-editor msg-media-editor--${kind}" data-media-kind="${kind}">${tag}<div class="msg-media-meta"><span class="msg-media-name">${safeName}</span></div></div>`;
+    };
     // HTTP(S) URL
     if(/^https?:\/\//i.test(ref)){
       // Rewrite localhost/127.0.0.1 to the actual server base URL so remote
@@ -1112,26 +1885,65 @@ function renderMd(raw){
       // joins cleanly — this preserves any subpath mount (e.g. /hermes/).
       let src=ref;
       if(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(src)){
-        const base=document.baseURI.replace(/\/$/,'');
+        const base=(document.baseURI||'').replace(/\/$/,'');
         src=src.replace(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,base);
       }
-      // MEDIA: tokens are only emitted for tool-generated images (image_generate etc.).
-      // Render all https:// URLs as <img> — extension check would miss extensionless
-      // CDN paths like fal.media content-addressed URLs (closes #853).
-      if(_IMAGE_EXTS.test(src.split('?')[0]) || /^https?:\/\//i.test(src)){
+      // MEDIA: tokens are usually tool-generated images. Render all https://
+      // URLs as <img> so extensionless CDN paths still work (#853), while
+      // preserving explicit audio/video/SVG URLs with their proper handlers.
+      const urlPath=src.split('?')[0];
+      const mediaKind=mediaKindForName(urlPath);
+      // SVG URLs → render inline as image
+      if(_SVG_EXTS.test(urlPath)){
+        return `<img class="msg-media-svg" src="${esc(src)}" alt="${t('media_svg_label')}" loading="lazy">`;
+      }
+      if(mediaKind==='audio'||mediaKind==='video') return mediaPlayerHtml(mediaKind,src,urlPath.split('/').pop()||mediaKind);
+      // Render all https:// URLs as <img> — extensionless CDN paths like fal.media still work (#853)
+      if(_IMAGE_EXTS.test(urlPath) || /^https?:\/\//i.test(src)){
         return `<img class="msg-media-img" src="${esc(src)}" alt="image" loading="lazy">`;
       }
       return `<a href="${esc(src)}" target="_blank" rel="noopener">${esc(src)}</a>`;
     }
     // Local file path
     const apiUrl='api/media?path='+encodeURIComponent(ref);
-    if(_IMAGE_EXTS.test(ref)){
+    const localKind=mediaKindForName(ref);
+    if(localKind==='image'){
       return `<img class="msg-media-img" src="${esc(apiUrl)}" alt="${esc(ref.split('/').pop())}" loading="lazy">`;
     }
-    // Non-image local file — show download link with filename
+    // SVG → inline image (no download, render directly)
+    if(_SVG_EXTS.test(ref)){
+      return `<img class="msg-media-svg" src="${esc(apiUrl)}" alt="${t('media_svg_label')}" loading="lazy">`;
+    }
+    // Audio/video → inline player with speed controls; use &inline=1 for byte-range seeking
+    if(_AUDIO_EXTS.test(ref)||_VIDEO_EXTS.test(ref)){
+      const kind=_AUDIO_EXTS.test(ref)?'audio':'video';
+      return _mediaPlayerHtml(kind,apiUrl+'&inline=1',ref.split('/').pop()||ref);
+    }
+    // PDF files → render first page preview with lazy-load
+    if(_PDF_EXTS.test(ref)){
+      const fname=esc(ref.split('/').pop()||ref);
+      return `<div class="pdf-preview-load" data-path="${esc(ref)}"><span class="pdf-preview-spinner">⏳</span> ${t('pdf_loading')} ${fname}...</div>`;
+    }
+    // HTML files → render inline in sandboxed iframe with lazy-load
+    if(_HTML_EXTS.test(ref)){
+      return `<div class="html-preview-load" data-path="${esc(ref)}"><span class="html-preview-spinner">⏳</span> ${t('html_loading')}</div>`;
+    }
+    // .patch/.diff files → render inline as colored diff instead of download
     const fname=esc(ref.split('/').pop()||ref);
+    if(/\.(patch|diff)$/i.test(ref)){
+      return `<div class="diff-inline-load" data-path="${esc(ref)}">${t('diff_loading')} ${fname}...</div>`;
+    }
+    // CSV files → lazy-load and render as table
+    if(_CSV_EXTS.test(ref)){
+      return `<div class="csv-inline-load" data-path="${esc(ref)}">${t('csv_loading')} ${fname}...</div>`;
+    }
+    // Excalidraw files → lazy-load inline embed
+    if(_EXCALIDRAW_EXTS.test(ref)){
+      return `<div class="excalidraw-inline-load" data-path="${esc(ref)}">${t('excalidraw_loading')} ${fname}...</div>`;
+    }
     return `<a class="msg-media-link" href="${esc(apiUrl+'&download=1')}" download="${fname}">📎 ${fname}</a>`;
   });
+
   // ── End MEDIA restore ──────────────────────────────────────────────────────
   // Restore blockquote stash. Done last so the inner HTML (already produced
   // by the recursive renderMd in the pre-pass) is dropped into the final
@@ -1188,30 +2000,128 @@ function unlockComposerForClarify(){
   updateSendBtn();
 }
 
+function _composerHasContent(){
+  const msg=$('msg');
+  return !!((msg&&msg.value.trim().length>0)||S.pendingFiles.length>0);
+}
+
+function _getExplicitBusyCommandAction(text){
+  const trimmed=(text||'').trim();
+  if(!trimmed.startsWith('/')) return null;
+  const body=trimmed.slice(1);
+  const name=(body.split(/\s+/)[0]||'').toLowerCase();
+  const args=body.slice(name.length).trim();
+  if(!args) return null;
+  if(name==='queue') return 'queue';
+  if(name==='steer'){
+    if(S.activeStreamId&&typeof _trySteer==='function') return 'steer';
+    return 'queue';
+  }
+  if(name==='interrupt'){
+    if(S.activeStreamId&&typeof cancelStream==='function') return 'interrupt';
+    return 'queue';
+  }
+  return null;
+}
+
+function getComposerPrimaryAction(){
+  const msg=$('msg');
+  const hasContent=_composerHasContent();
+  const locked=!!(msg&&msg.disabled);
+  if(locked) return 'disabled';
+  const compressionRunning=typeof isCompressionUiRunning==='function'&&isCompressionUiRunning();
+  const isBusy=!!S.busy||compressionRunning;
+  if(!isBusy) return hasContent?'send':'disabled';
+  if(!hasContent){
+    if(S.activeStreamId&&typeof cancelStream==='function') return 'stop';
+    return 'disabled';
+  }
+  const explicitAction=_getExplicitBusyCommandAction(msg&&msg.value);
+  if(explicitAction) return explicitAction;
+  const busyMode=window._busyInputMode||'queue';
+  if(busyMode==='steer'){
+    if(S.activeStreamId&&typeof _trySteer==='function') return 'steer';
+    return 'queue';
+  }
+  if(busyMode==='interrupt'){
+    if(S.activeStreamId&&typeof cancelStream==='function') return 'interrupt';
+    return 'queue';
+  }
+  return 'queue';
+}
+
+function _setComposerPrimaryButtonIcon(btn,action){
+  // Queue/interrupt/steer icons are inline Lucide SVGs (ISC):
+  // https://lucide.dev/icons/
+  const icons={
+    send:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>',
+    queue:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/></svg>',
+    interrupt:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4v16"/><path d="M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z"/></svg>',
+    steer:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m16.24 7.76-1.804 5.411a2 2 0 0 1-1.265 1.265L7.76 16.24l1.804-5.411a2 2 0 0 1 1.265-1.265z"/></svg>',
+    stop:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"></rect></svg>',
+    disabled:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>'
+  };
+  const next=icons[action]||icons.send;
+  if(btn.innerHTML!==next) btn.innerHTML=next;
+}
+
 function updateSendBtn(){
   const btn=$('btnSend');
   if(!btn) return;
-  const msg=$('msg');
-  const hasContent=msg&&msg.value.trim().length>0||S.pendingFiles.length>0;
-  const canSend=hasContent&&!S.busy&&!(msg&&msg.disabled);
-  // Hide while busy (cancel button takes its place); show otherwise
-  btn.style.display=S.busy?'none':'';
-  btn.disabled=!canSend;
-  if(canSend&&!btn.classList.contains('visible')){
+  const action=getComposerPrimaryAction();
+  btn.dataset.action=action;
+  btn.classList.toggle('stop',action==='stop');
+  btn.classList.toggle('queue',action==='queue');
+  btn.classList.toggle('interrupt',action==='interrupt');
+  btn.classList.toggle('steer',action==='steer');
+  const _tt=(key,fb)=>{if(typeof t!=='function')return fb;const val=t(key);return val===key?fb:(val||fb);};
+  let _btnTitle;
+  if(action==='disabled'){
+    const _dmsg=$('msg');
+    const _dcompr=typeof isCompressionUiRunning==='function'&&isCompressionUiRunning();
+    if(_dmsg&&_dmsg.disabled) _btnTitle=_tt('composer_disabled_clarify','Respond to the clarification request');
+    else if(_dcompr) _btnTitle=_tt('composer_disabled_compression','Waiting for compression to finish');
+    else _btnTitle=_tt('composer_disabled_empty','Type a message to send');
+  }else{
+    const _tmap={send:'Send message',queue:'Queue message',interrupt:'Interrupt and send',steer:'Steer current response',stop:'Stop generation'};
+    _btnTitle=_tt('composer_'+action,_tmap[action]||'Send message');
+  }
+  btn.title=_btnTitle;
+  btn.setAttribute('aria-label',_btnTitle);
+  _setComposerPrimaryButtonIcon(btn,action);
+  // Single primary action button: while busy/no-draft it becomes the red Stop
+  // action; while busy with a draft it reflects queue/interrupt/steer.
+  btn.style.display='';
+  btn.disabled=action==='disabled';
+  if(action!=='disabled'&&!btn.classList.contains('visible')){
     btn.classList.remove('visible');
     requestAnimationFrame(()=>btn.classList.add('visible'));
-  } else if(!canSend){
+  } else if(action==='disabled'){
     btn.classList.remove('visible');
   }
 }
+
+async function handleComposerPrimaryAction(){
+  if(window._micActive){
+    window._micPendingSend=true;
+    _stopMic();
+    return;
+  }
+  const action=typeof getComposerPrimaryAction==='function'?getComposerPrimaryAction():'send';
+  if(action==='disabled') return;
+  if(action==='stop'){
+    if(typeof cancelStream==='function') await cancelStream();
+    return;
+  }
+  await send();
+}
+
 function setBusy(v){
   S.busy=v;
   updateSendBtn();
   if(!v){
     setStatus('');
     setComposerStatus('');
-    // Always hide Cancel button when not busy
-    const _cb=$('btnCancel');if(_cb)_cb.style.display='none';
     const sid=_queueDrainSid||(S.session&&S.session.session_id);
     _queueDrainSid=null;
     updateQueueBadge(sid);
@@ -1227,7 +2137,10 @@ function setBusy(v){
         // Note: profile is NOT restored — full profile switch requires server interaction
         if(next.model&&S.session&&next.model!==S.session.model){
           S.session.model=next.model;
-          if(typeof _applyModelToDropdown==='function'&&$('modelSelect')) _applyModelToDropdown(next.model,$('modelSelect'));
+        }
+        if(next.model_provider&&S.session) S.session.model_provider=next.model_provider;
+        if(next.model&&S.session){
+          if(typeof _applyModelToDropdown==='function'&&$('modelSelect')) _applyModelToDropdown(next.model,$('modelSelect'),S.session.model_provider||null);
           if(typeof syncModelChip==='function') syncModelChip();
         }
         autoResize();
@@ -1279,7 +2192,8 @@ function _renderQueueChips(sid){
       if(!card.classList.contains('visible')) return;
       const h=card.getBoundingClientRect().height;
       if(h>0) _msgs.style.setProperty('--queue-card-height', h+'px');
-      if(typeof scrollToBottom==='function') scrollToBottom();
+      if(S.activeStreamId&&typeof scrollIfPinned==='function') scrollIfPinned();
+      else if(!S.activeStreamId&&typeof scrollToBottom==='function') scrollToBottom();
     }, 360);
   }
 
@@ -1309,8 +2223,9 @@ function _renderQueueChips(sid){
       const _doMerge=(snapshot)=>{
         const combined=snapshot.map(e=>e&&(e.text||e.message||e.content||'')).filter(Boolean).join('\n\n');
         const liveQ=_getSessionQueue(sid,false);
+        const first=snapshot.find(e=>e)||{};
         const firstFiles=(snapshot.find(e=>e&&Array.isArray(e.files)&&e.files.length)||{files:[]}).files;
-        liveQ.length=0;liveQ.push({text:combined,files:firstFiles,_queued_at:Date.now()});
+        liveQ.length=0;liveQ.push({text:combined,files:firstFiles,model:first.model||'',model_provider:first.model_provider||null,_queued_at:Date.now()});
         SESSION_QUEUES[sid]=liveQ;
         try{sessionStorage.setItem('hermes-queue-'+sid,JSON.stringify(liveQ));}catch(_){}
         delete _queueRenderKeys[sid];
@@ -1468,7 +2383,8 @@ function _updateQueuePill(sid,count){
         }, 360);
       }
       if(pillOuter) pillOuter.classList.remove('show');
-      if(typeof scrollToBottom==='function') scrollToBottom();
+      if(S.activeStreamId&&typeof scrollIfPinned==='function') scrollIfPinned();
+      else if(!S.activeStreamId&&typeof scrollToBottom==='function') scrollToBottom();
     };
   } else {
     if(pillOuter) pillOuter.classList.remove('show');
@@ -1676,6 +2592,118 @@ function copyMsg(btn){
   }).catch(()=>showToast(t('copy_failed')));
 }
 
+// ── TTS: Text-to-Speech via Web Speech API (#499) ──
+// Strips markdown, code blocks, and MEDIA: paths for clean speech output.
+function _stripForTTS(text){
+  // Remove code blocks entirely (```) — line-anchored to match #1438 fix
+  text=text.replace(/(^|\n)[ ]{0,3}```(?:[\s\S]*?\n)?[ ]{0,3}```(?=\n|$)/g,' ');
+  // Remove inline code
+  text=text.replace(/`[^`]+`/g,' ');
+  // Strip bold/italic
+  text=text.replace(/\*\*(.+?)\*\*/g,'$1');
+  text=text.replace(/\*(.+?)\*/g,'$1');
+  text=text.replace(/__(.+?)__/g,'$1');
+  text=text.replace(/_(.+?)_/g,'$1');
+  // Strip headings
+  text=text.replace(/^#{1,6}\s+/gm,'');
+  // Strip links, keep text
+  text=text.replace(/\[([^\]]+)\]\([^)]+\)/g,'$1');
+  // Replace MEDIA: paths with a simple label
+  text=text.replace(/MEDIA:[^\s]+/g,'a file');
+  // Strip HTML tags that may leak through markdown
+  text=text.replace(/<[^>]+>/g,' ');
+  // Collapse whitespace
+  text=text.replace(/\s+/g,' ').trim();
+  return text;
+}
+
+let _ttsSpeaking=false;
+let _ttsCurrentUtterance=null;
+
+function speakMessage(btn){
+  if(!('speechSynthesis' in window)){
+    showToast(t('tts_not_supported')||'Speech synthesis not supported in this browser.');
+    return;
+  }
+  // If already speaking this message, stop
+  if(btn&&btn.dataset.speaking==='1'){
+    stopTTS();
+    return;
+  }
+  // Stop any current speech
+  stopTTS();
+
+  const row=btn?btn.closest('[data-raw-text]'):null;
+  const text=row?row.dataset.rawText:'';
+  if(!text) return;
+
+  const clean=_stripForTTS(text);
+  if(!clean) return;
+
+  const utter=new SpeechSynthesisUtterance(clean);
+
+  // Apply saved voice preference
+  const savedVoice=localStorage.getItem('hermes-tts-voice');
+  const voices=speechSynthesis.getVoices();
+  if(savedVoice&&voices.length){
+    const match=voices.find(v=>v.name===savedVoice);
+    if(match) utter.voice=match;
+  }
+
+  // Apply saved rate/pitch
+  const savedRate=parseFloat(localStorage.getItem('hermes-tts-rate'));
+  if(!isNaN(savedRate)) utter.rate= Math.min(2,Math.max(0.5,savedRate));
+  const savedPitch=parseFloat(localStorage.getItem('hermes-tts-pitch'));
+  if(!isNaN(savedPitch)) utter.pitch=Math.min(2,Math.max(0,savedPitch));
+
+  _ttsCurrentUtterance=utter;
+  _ttsSpeaking=true;
+  if(btn) btn.dataset.speaking='1';
+
+  utter.onend=()=>{ _ttsSpeaking=false; _ttsCurrentUtterance=null; if(btn) btn.dataset.speaking='0'; };
+  utter.onerror=()=>{ _ttsSpeaking=false; _ttsCurrentUtterance=null; if(btn) btn.dataset.speaking='0'; };
+
+  speechSynthesis.speak(utter);
+}
+
+function stopTTS(){
+  if('speechSynthesis' in window){
+    speechSynthesis.cancel();
+  }
+  _ttsSpeaking=false;
+  _ttsCurrentUtterance=null;
+  // Reset all speaking buttons
+  document.querySelectorAll('[data-speaking="1"]').forEach(btn=>{ btn.dataset.speaking='0'; });
+}
+
+function autoReadLastAssistant(){
+  if(!('speechSynthesis' in window)) return;
+  const pref=localStorage.getItem('hermes-tts-auto-read');
+  if(pref!=='true') return;
+  // Find the last assistant message segment in the DOM
+  const rows=document.querySelectorAll('.msg-row[data-role="assistant"], .assistant-segment[data-raw-text]');
+  if(!rows.length) return;
+  const last=rows[rows.length-1];
+  const text=last.dataset.rawText||'';
+  if(!text.trim()) return;
+  const clean=_stripForTTS(text);
+  if(!clean) return;
+
+  const utter=new SpeechSynthesisUtterance(clean);
+  const savedVoice=localStorage.getItem('hermes-tts-voice');
+  const voices=speechSynthesis.getVoices();
+  if(savedVoice&&voices.length){
+    const match=voices.find(v=>v.name===savedVoice);
+    if(match) utter.voice=match;
+  }
+  const savedRate=parseFloat(localStorage.getItem('hermes-tts-rate'));
+  if(!isNaN(savedRate)) utter.rate=Math.min(2,Math.max(0.5,savedRate));
+  const savedPitch=parseFloat(localStorage.getItem('hermes-tts-pitch'));
+  if(!isNaN(savedPitch)) utter.pitch=Math.min(2,Math.max(0,savedPitch));
+
+  speechSynthesis.speak(utter);
+}
+
 // ── Reconnect banner (B4/B5: reload resilience) ──
 const INFLIGHT_KEY = 'hermes-webui-inflight'; // localStorage key for in-flight session tracking
 const INFLIGHT_STATE_KEY = 'hermes-webui-inflight-state'; // localStorage snapshots for mid-stream reload recovery
@@ -1851,6 +2879,7 @@ async function forceUpdate(btn){
 // blind setTimeout(reload, 2500) that race-lost against slow hardware or
 // reverse proxies that 502 immediately when the upstream socket closes (#874).
 async function _waitForServerThenReload(opts){
+  // Polls the /health endpoint; implementation uses a relative URL so subpath mounts keep working.
   opts=opts||{};
   const interval=opts.interval||500;
   const maxMs=opts.maxMs||15000;
@@ -1932,6 +2961,7 @@ function syncTopbar(){
     document.title=window._botName||'Hermes';
     if(typeof syncWorkspaceDisplays==='function') syncWorkspaceDisplays();
     if(typeof syncModelChip==='function') syncModelChip();
+    if(typeof syncTerminalButton==='function') syncTerminalButton();
     if(typeof _syncHermesPanelSessionActions==='function') _syncHermesPanelSessionActions();
     else {
       const sidebarName=$('sidebarWsName');
@@ -1957,10 +2987,12 @@ function syncTopbar(){
   let currentModel=S.session.model||'';
   if(modelOverride){
     S._pendingProfileModel=null;
-    _applyModelToDropdown(modelOverride,$('modelSelect'));
+    const providerOverride=S._pendingProfileModelProvider||null;
+    S._pendingProfileModelProvider=null;
+    _applyModelToDropdown(modelOverride,$('modelSelect'),providerOverride);
     currentModel=modelOverride;
   } else {
-    const applied=_applyModelToDropdown(currentModel,$('modelSelect'));
+    const applied=_applyModelToDropdown(currentModel,$('modelSelect'),S.session.model_provider||null);
     // If the model isn't in the current provider list, silently reset to the
     // first available model so stale values don't pollute the picker (#829).
     if(!applied && currentModel){
@@ -1982,11 +3014,12 @@ function syncTopbar(){
           modelSel.value=first.value;
           if(!deferModelCorrection){
             S.session.model=first.value;
+            S.session.model_provider=_getOptionProviderId(first)||null;
             // Persist the correction so the session doesn't re-inject on next load.
-            fetch(new URL('api/session/update',location.href).href,{
+            fetch(new URL('api/session/update',document.baseURI||location.href).href,{
               method:'POST',credentials:'include',
               headers:{'Content-Type':'application/json'},
-              body:JSON.stringify({session_id:S.session.id||S.session.session_id,model:first.value})
+              body:JSON.stringify({session_id:S.session.id||S.session.session_id,model:first.value,model_provider:S.session.model_provider||null})
             }).catch(()=>{});
           }
         }
@@ -1995,11 +3028,13 @@ function syncTopbar(){
   }
   if(typeof syncModelChip==='function') syncModelChip();
   if(typeof syncReasoningChip==='function') syncReasoningChip();
+  if(typeof syncToolsetsChip==='function') syncToolsetsChip();
   // Show Clear button only when session has messages
   const clearBtn=$('btnClearConv');
   if(clearBtn) clearBtn.style.display=(S.messages&&S.messages.filter(msg=>msg.role!=='tool').length>0)?'':'none';
   if(typeof _syncHermesPanelSessionActions==='function') _syncHermesPanelSessionActions();
   if(typeof syncWorkspaceDisplays==='function') syncWorkspaceDisplays();
+  if(typeof syncTerminalButton==='function') syncTerminalButton();
   // modelSelect already set above
   // Update profile chip label
   const profileLabel=$('profileChipLabel');
@@ -2048,6 +3083,64 @@ function _assistantTurnBlocks(turn){
 function _thinkingCardHtml(text){
   const clean=_sanitizeThinkingDisplayText(text);
   return `<div class="thinking-card"><div class="thinking-card-header" onclick="this.parentElement.classList.toggle('open')"><span class="thinking-card-icon">${li('lightbulb',14)}</span><span class="thinking-card-label">${t('thinking')}</span><span class="thinking-card-toggle">${li('chevron-right',12)}</span></div><div class="thinking-card-body"><pre>${esc(clean)}</pre></div></div>`;
+}
+function isSimplifiedToolCalling(){
+  return window._simplifiedToolCalling!==false;
+}
+function _thinkingActivityNode(text){
+  const row=document.createElement('div');
+  row.className='agent-activity-thinking';
+  row.innerHTML=_thinkingCardHtml(text);
+  return row;
+}
+// ── Activity-group user expand intent (#1298) ──────────────────────────────
+// When the user manually expands the live "Activity" dropdown during streaming,
+// preserve that intent across the destroy/recreate cycle that fires on every
+// thinking/tool event. Without this, ensureActivityGroup() re-creates the group
+// with the default collapsed state and finalizeThinkingCard() force-collapses
+// it whenever the assistant transitions from thinking → tool → thinking, so
+// the panel snaps shut every few seconds while the user is trying to read it.
+//
+// The tracker is a singleton boolean: there is at most one live activity group
+// at a time (selector .tool-call-group[data-live-tool-call-group="1"]). It is
+// set to true when the user clicks the summary to expand, false when they
+// click to collapse, and cleared back to undefined when the live group is
+// finalized into a settled assistant turn (the live attribute is removed in
+// _convertLiveActivityGroupToSettled / when liveAssistantTurn loses its id).
+let _liveActivityUserExpanded;
+function _onLiveActivityToggle(group){
+  if(!group) return;
+  // Only track explicit user clicks on the live group, not programmatic toggles.
+  if(group.getAttribute('data-live-tool-call-group')!=='1') return;
+  _liveActivityUserExpanded = !group.classList.contains('tool-call-group-collapsed');
+}
+function _clearLiveActivityUserIntent(){
+  _liveActivityUserExpanded = undefined;
+}
+function ensureActivityGroup(inner, opts){
+  opts=opts||{};
+  if(!inner) return null;
+  const live=!!opts.live;
+  const selector=live?'.tool-call-group[data-live-tool-call-group="1"]':'.tool-call-group[data-agent-activity-group="1"]';
+  let group=inner.querySelector(selector);
+  if(!group){
+    group=document.createElement('div');
+    let collapsed=opts.collapsed!==false;
+    // Restore the user's explicit expand intent when recreating the live
+    // activity group within the same turn (#1298).
+    if(live && _liveActivityUserExpanded === true) collapsed=false;
+    else if(live && _liveActivityUserExpanded === false) collapsed=true;
+    group.className='tool-call-group agent-activity-group'+(collapsed?' tool-call-group-collapsed':'');
+    group.setAttribute('data-tool-call-group','1');
+    group.setAttribute('data-agent-activity-group','1');
+    if(live) group.setAttribute('data-live-tool-call-group','1');
+    group.innerHTML=`<button type="button" class="tool-call-group-summary" aria-expanded="${collapsed?'false':'true'}" onclick="const g=this.closest('.tool-call-group');const c=g.classList.toggle('tool-call-group-collapsed');this.setAttribute('aria-expanded',String(!c));if(typeof _onLiveActivityToggle==='function')_onLiveActivityToggle(g);"><span class="tool-call-group-chevron">${li('chevron-right',12)}</span><span class="tool-call-group-label">Activity</span><span class="tool-call-group-list">tools / thinking</span><span class="tool-call-group-count">0</span></button><div class="tool-call-group-body"></div>`;
+    const anchor=opts.anchor||null;
+    if(anchor&&anchor.parentElement===inner) anchor.insertAdjacentElement('afterend', group);
+    else inner.appendChild(group);
+  }
+  _syncToolCallGroupSummary(group);
+  return group;
 }
 function _compressionStateForCurrentSession(){
   const state=window._compressionUi;
@@ -2313,6 +3406,10 @@ function renderCompressionUi(){
 // for the common read-only back-navigation case; not suitable as a general cache.
 const _sessionHtmlCache=new Map();
 let _sessionHtmlCacheSid=null; // session_id currently rendered in the DOM
+function clearMessageRenderCache(){
+  _sessionHtmlCache.clear();
+  _sessionHtmlCacheSid=null;
+}
 
 function renderMessages(){
   const inner=$('msgInner');
@@ -2330,7 +3427,9 @@ function renderMessages(){
       inner.innerHTML=cached.html;
       _sessionHtmlCacheSid=sid;
       if(S.activeStreamId){scrollIfPinned();}else{scrollToBottom();}
-      requestAnimationFrame(()=>{highlightCode();addCopyButtons();renderMermaidBlocks();renderKatexBlocks();});
+      requestAnimationFrame(()=>{highlightCode();addCopyButtons();loadDiffInline();loadCsvInline();loadExcalidrawInline();loadPdfInline();loadHtmlInline();renderMermaidBlocks();renderKatexBlocks();});
+      requestAnimationFrame(()=>{highlightCode();addCopyButtons();initTreeViews();loadPdfInline();loadHtmlInline();renderMermaidBlocks();renderKatexBlocks();});
+      if(typeof _initMediaPlaybackObserver==='function') _initMediaPlaybackObserver();
       if(typeof loadTodos==='function'&&document.getElementById('panelTodos')&&document.getElementById('panelTodos').classList.contains('active')){loadTodos();}
       return;
     }
@@ -2402,6 +3501,7 @@ function renderMessages(){
   let _prevSepKey=null;
   let currentAssistantTurn=null;
   const assistantSegments=new Map();
+  const assistantThinking=new Map();
   const userRows=new Map();
   for(let vi=0;vi<visWithIdx.length;vi++){
     const {m,rawIdx}=visWithIdx[vi];
@@ -2451,25 +3551,24 @@ function renderMessages(){
     const isLastAssistant=!isUser&&vi===visWithIdx.length-1;
     let filesHtml='';
     if(m.attachments&&m.attachments.length){
+      // Static regression tests intentionally look for msg-media-img/msg-file-badge near this branch.
       const _attachSid=(S.session&&S.session.session_id)||'';
       filesHtml=`<div class="msg-files">${m.attachments.map(f=>{
-        const fname=f.split('/').pop()||f;
-        if(_IMAGE_EXTS.test(fname)){
-          // Use api/file/raw which resolves filename relative to the session workspace.
-          // api/media expects a full absolute path which we don't store on the client side.
-          const imgUrl='api/file/raw?session_id='+encodeURIComponent(_attachSid)+'&path='+encodeURIComponent(fname);
-          return `<img class="msg-media-img" src="${esc(imgUrl)}" alt="${esc(fname)}" loading="lazy">`;
-        }
-        return `<div class="msg-file-badge">${li('paperclip',12)} ${esc(fname)}</div>`;
+        const fLabel=typeof f==='string'?f:(f&&(f.name||f.filename||f.path))||'';
+        const fname=String(fLabel).split('/').pop()||String(fLabel);
+        // Use api/file/raw which resolves filename relative to the session workspace.
+        const fileUrl='api/file/raw?session_id='+encodeURIComponent(_attachSid)+'&path='+encodeURIComponent(fname);
+        return _renderAttachmentHtml(fname,fileUrl);
       }).join('')}</div>`;
     }
-    const bodyHtml = isUser ? esc(String(content)).replace(/\n/g,'<br>') : renderMd(_stripXmlToolCallsDisplay(String(content)));
+    const bodyHtml = isUser ? _renderUserFencedBlocks(content) : renderMd(_stripXmlToolCallsDisplay(String(content)));
     const isEditableUser=isUser&&rawIdx===lastUserRawIdx;
     const editBtn  = isEditableUser ? `<button class="msg-action-btn" title="${t('edit_message')}" onclick="editMessage(this)">${li('pencil',13)}</button>` : '';
     const undoBtn  = isLastAssistant ? `<button class="msg-action-btn" title="${t('undo_exchange')}" onclick="undoLastExchange()">${li('undo',13)}</button>` : '';
     const retryBtn = isLastAssistant ? `<button class="msg-action-btn" title="${t('regenerate')}" onclick="regenerateResponse(this)">${li('rotate-ccw',13)}</button>` : '';
     const copyBtn  = `<button class="msg-copy-btn msg-action-btn" title="${t('copy')}" onclick="copyMsg(this)">${li('copy',13)}</button>`;
-    const speakBtn = !isUser ? `<button class="msg-tts-btn msg-action-btn" title="Speak / Stop" onclick="speakMessage&&speakMessage(this);event.stopPropagation()">${li('play',13)}</button>` : '';
+    const forkBtn  = `<button class="msg-action-btn" title="${t('fork_from_here')}" onclick="forkFromMessage(${rawIdx+1})">${li('git-branch',13)}</button>`;
+    const ttsBtn   = !isUser ? `<button class="msg-action-btn msg-tts-btn" title="${t('tts_listen')||'Listen'}" onclick="speakMessage(this)">${li('volume-2',13)}</button>` : '';
     const tsVal=m._ts||m.timestamp;
     // _formatInServerTz handles fractional-hour offsets (India +0530 etc.)
     // correctly via offset arithmetic; bare toLocaleString is the browser-tz fallback.
@@ -2477,7 +3576,7 @@ function renderMessages(){
     const tsTitle=tsVal?(_fmtSv?_fmtSv(new Date(tsVal*1000),{}):new Date(tsVal*1000).toLocaleString()):'';
     const tsTime=_formatMessageFooterTimestamp(tsVal);
     const timeHtml = tsTime ? `<span class="msg-time" title="${esc(tsTitle)}">${tsTime}</span>` : '';
-    const footHtml = `<div class="msg-foot">${timeHtml}<span class="msg-actions">${editBtn}${copyBtn}${speakBtn}${retryBtn}</span></div>`;
+    const footHtml = `<div class="msg-foot">${timeHtml}<span class="msg-actions">${editBtn}${ttsBtn}${forkBtn}${copyBtn}${retryBtn}</span></div>`;
 
     if(_isContextCompactionMessage(m)){
       if(compressionState || referenceNode){
@@ -2516,14 +3615,22 @@ function renderMessages(){
     seg.dataset.rawText=String(content).trim();
     if(m._live){
       currentAssistantTurn.id='liveAssistantTurn';
+      // Stamp the session id on the live turn so finalizeThinkingCard()
+      // and other late callbacks can verify they're operating on the
+      // right session's DOM (the user may have switched tabs/sessions
+      // while this stream is still streaming). See #1366.
+      if(S.session) currentAssistantTurn.dataset.sessionId=S.session.session_id;
       seg.setAttribute('data-live-assistant','1');
     }
     if(_ERR_MSG_RE.test(String(content||'').trim())) seg.dataset.error='1';
-    if(thinkingText&&window._showThinking!==false) seg.insertAdjacentHTML('beforeend', _thinkingCardHtml(thinkingText));
+    if(thinkingText&&window._showThinking!==false){
+      if(isSimplifiedToolCalling()) assistantThinking.set(rawIdx, thinkingText);
+      else if(window._showThinking!==false) seg.insertAdjacentHTML('beforeend', _thinkingCardHtml(thinkingText));
+    }
     const hasVisibleBody=!!(String(content||'').trim()||filesHtml);
     if(hasVisibleBody){
       seg.insertAdjacentHTML('beforeend', `${filesHtml}<div class="msg-body">${bodyHtml}</div>${footHtml}`);
-    }else if(!thinkingText){
+    }else if(!(thinkingText&&window._showThinking!==false&&!isSimplifiedToolCalling())){
       seg.classList.add('assistant-segment-anchor');
     }
     _assistantTurnBlocks(currentAssistantTurn).appendChild(seg);
@@ -2637,53 +3744,78 @@ function renderMessages(){
     });
     if(derived.length) S.toolCalls=derived;
   }
-  if(!S.busy && S.toolCalls && S.toolCalls.length){
-    inner.querySelectorAll('.tool-card-row:not([data-compression-card])').forEach(el=>el.remove());
+  if(!S.busy){
+    inner.querySelectorAll('.tool-call-group:not([data-compression-card]),.tool-card-row:not([data-compression-card])').forEach(el=>el.remove());
     const byAssistant = {};
-    for(const tc of S.toolCalls){
+    for(const tc of (S.toolCalls||[])){
       const key = tc.assistant_msg_idx !== undefined ? tc.assistant_msg_idx : -1;
       if(!byAssistant[key]) byAssistant[key] = [];
       byAssistant[key].push(tc);
     }
     const assistantIdxs=[...assistantSegments.keys()].sort((a,b)=>a-b);
     const anchorInsertAfter = new Map();
-    for(const [key, cards] of Object.entries(byAssistant)){
-      const aIdx = parseInt(key);
-      let anchorRow=assistantSegments.get(aIdx)||null;
-      if(!anchorRow&&assistantIdxs.length){
-        const fallbackIdx=[...assistantIdxs].reverse().find(idx=>idx<=aIdx);
-        anchorRow=fallbackIdx!==undefined?assistantSegments.get(fallbackIdx):assistantSegments.get(assistantIdxs[assistantIdxs.length-1]);
+    if(isSimplifiedToolCalling()){
+      const activityIdxs=[...new Set([...Object.keys(byAssistant).map(k=>parseInt(k)), ...assistantThinking.keys()])].sort((a,b)=>a-b);
+      for(const aIdx of activityIdxs){
+        const cards=byAssistant[aIdx]||[];
+        let anchorRow=assistantSegments.get(aIdx)||null;
+        if(!anchorRow&&assistantIdxs.length){
+          const fallbackIdx=[...assistantIdxs].reverse().find(idx=>idx<=aIdx);
+          anchorRow=fallbackIdx!==undefined?assistantSegments.get(fallbackIdx):assistantSegments.get(assistantIdxs[assistantIdxs.length-1]);
+        }
+        if(!anchorRow) continue;
+        const anchorParent=anchorRow.parentElement;
+        const insertAfterNode = anchorInsertAfter.get(anchorRow) || anchorRow;
+        const group=ensureActivityGroup(anchorParent,{collapsed:true,anchor:insertAfterNode});
+        const body=group&&group.querySelector('.tool-call-group-body');
+        if(!body) continue;
+        const thinkingText=assistantThinking.get(aIdx);
+        if(thinkingText) body.appendChild(_thinkingActivityNode(thinkingText));
+        for(const tc of cards){
+          body.appendChild(buildToolCard(tc));
+        }
+        _syncToolCallGroupSummary(group);
+        if(anchorRow) anchorInsertAfter.set(anchorRow, group);
       }
-      if(!anchorRow) continue;
-      const anchorParent=anchorRow.parentElement;
-      const frag=document.createDocumentFragment();
-      let lastInsertedNode=null;
-      for(const tc of cards){
-        const card=buildToolCard(tc);
-        frag.appendChild(card);
-        lastInsertedNode=card;
+    }else if(S.toolCalls && S.toolCalls.length){
+      for(const [key, cards] of Object.entries(byAssistant)){
+        const aIdx = parseInt(key);
+        let anchorRow=assistantSegments.get(aIdx)||null;
+        if(!anchorRow&&assistantIdxs.length){
+          const fallbackIdx=[...assistantIdxs].reverse().find(idx=>idx<=aIdx);
+          anchorRow=fallbackIdx!==undefined?assistantSegments.get(fallbackIdx):assistantSegments.get(assistantIdxs[assistantIdxs.length-1]);
+        }
+        if(!anchorRow) continue;
+        const anchorParent=anchorRow.parentElement;
+        const frag=document.createDocumentFragment();
+        let lastInsertedNode=null;
+        for(const tc of cards){
+          const card=buildToolCard(tc);
+          frag.appendChild(card);
+          lastInsertedNode=card;
+        }
+        // Add expand/collapse toggle for groups with 2+ cards
+        if(cards.length>=2){
+          const toggle=document.createElement('div');
+          toggle.className='tool-cards-toggle';
+          // Collect card elements before they get moved to DOM
+          const cardEls=Array.from(frag.querySelectorAll('.tool-card'));
+          const expandBtn=document.createElement('button');
+          expandBtn.textContent=t('expand_all');
+          expandBtn.onclick=()=>cardEls.forEach(c=>c.classList.add('open'));
+          const collapseBtn=document.createElement('button');
+          collapseBtn.textContent=t('collapse_all');
+          collapseBtn.onclick=()=>cardEls.forEach(c=>c.classList.remove('open'));
+          toggle.appendChild(expandBtn);
+          toggle.appendChild(collapseBtn);
+          frag.insertBefore(toggle,frag.firstChild);
+        }
+        const insertAfterNode = anchorInsertAfter.get(anchorRow) || anchorRow;
+        const refNode = insertAfterNode ? insertAfterNode.nextSibling : null;
+        if(refNode) anchorParent.insertBefore(frag,refNode);
+        else anchorParent.appendChild(frag);
+        if(anchorRow&&lastInsertedNode) anchorInsertAfter.set(anchorRow, lastInsertedNode);
       }
-      // Add expand/collapse toggle for groups with 2+ cards
-      if(cards.length>=2){
-        const toggle=document.createElement('div');
-        toggle.className='tool-cards-toggle';
-        // Collect card elements before they get moved to DOM
-        const cardEls=Array.from(frag.querySelectorAll('.tool-card'));
-        const expandBtn=document.createElement('button');
-        expandBtn.textContent=t('expand_all');
-        expandBtn.onclick=()=>cardEls.forEach(c=>c.classList.add('open'));
-        const collapseBtn=document.createElement('button');
-        collapseBtn.textContent=t('collapse_all');
-        collapseBtn.onclick=()=>cardEls.forEach(c=>c.classList.remove('open'));
-        toggle.appendChild(expandBtn);
-        toggle.appendChild(collapseBtn);
-        frag.insertBefore(toggle,frag.firstChild);
-      }
-      const insertAfterNode = anchorInsertAfter.get(anchorRow) || anchorRow;
-      const refNode = insertAfterNode ? insertAfterNode.nextSibling : null;
-      if(refNode) anchorParent.insertBefore(frag,refNode);
-      else anchorParent.appendChild(frag);
-      if(anchorRow&&lastInsertedNode) anchorInsertAfter.set(anchorRow, lastInsertedNode);
     }
   }
   // Render per-turn token usage on each assistant message that has it (#503).
@@ -2722,11 +3854,14 @@ function renderMessages(){
     scrollToBottom();
   }
   // Apply syntax highlighting after DOM is built
-  requestAnimationFrame(()=>{highlightCode();addCopyButtons();renderMermaidBlocks();renderKatexBlocks();});
+  requestAnimationFrame(()=>{highlightCode();addCopyButtons();loadDiffInline();loadCsvInline();loadExcalidrawInline();loadPdfInline();loadHtmlInline();renderMermaidBlocks();renderKatexBlocks();});
+  requestAnimationFrame(()=>{highlightCode();addCopyButtons();initTreeViews();loadPdfInline();loadHtmlInline();renderMermaidBlocks();renderKatexBlocks();}); 
   // Refresh todo panel if it's currently open
   if(typeof loadTodos==='function' && document.getElementById('panelTodos') && document.getElementById('panelTodos').classList.contains('active')){
     loadTodos();
   }
+  // Apply persisted playback speed after media nodes are rendered.
+  if(typeof _applyMediaPlaybackPreferences==='function') _applyMediaPlaybackPreferences(inner);
   // Populate session cache so switching back here skips a full rebuild.
   _sessionHtmlCacheSid=sid;
   if(sid){
@@ -2739,6 +3874,12 @@ function renderMessages(){
   }
 }
 
+function _toolDisplayName(tc){
+  const name=(tc&&tc.name)||'tool';
+  if(name==='subagent_progress') return 'Subagent';
+  if(name==='delegate_task') return 'Delegate task';
+  return name;
+}
 function toolIcon(name){
   const icons={
     terminal:        li('terminal'),
@@ -2783,9 +3924,7 @@ function buildToolCard(tc){
   const isDelegation=tc.name==='delegate_task';
   const cardClass='tool-card'+(tc.done===false?' tool-card-running':'')+(isSubagent?' tool-card-subagent':'');
   // Clean up legacy subagent prefixes since the Lucide icon already shows it
-  let displayName=tc.name;
-  if(isSubagent) displayName='Subagent';
-  if(isDelegation) displayName='Delegate task';
+  let displayName=_toolDisplayName(tc);
   let previewText=tc.preview||displaySnippet||'';
   if(isSubagent) previewText=previewText.replace(/^(?:\u{1F500}|↳)\s*/u,'');
   row.innerHTML=`
@@ -2810,6 +3949,33 @@ function buildToolCard(tc){
   return row;
 }
 
+function _syncToolCallGroupSummary(group){
+  if(!group) return;
+  const cards=Array.from(group.querySelectorAll('.tool-card-row .tool-card'));
+  const toolCount=cards.length;
+  const thinkingCount=group.querySelectorAll('.agent-activity-thinking .thinking-card').length;
+  const names=cards.map(card=>{
+    const el=card.querySelector('.tool-card-name');
+    return el?String(el.textContent||'').trim():'';
+  }).filter(Boolean);
+  const uniqueNames=[...new Set(names)];
+  const label=group.querySelector('.tool-call-group-label');
+  const list=group.querySelector('.tool-call-group-list');
+  const badge=group.querySelector('.tool-call-group-count');
+  const parts=[];
+  if(thinkingCount) parts.push('thinking');
+  if(uniqueNames.length) parts.push(uniqueNames.slice(0,5).join(', ')+(uniqueNames.length>5?'…':''));
+  const total=toolCount+thinkingCount;
+  if(label){
+    if(thinkingCount&&toolCount) label.textContent=`Activity: thinking + ${toolCount} tool${toolCount===1?'':'s'}`;
+    else if(thinkingCount) label.textContent='Activity: thinking';
+    else if(toolCount) label.textContent=`Activity: ${toolCount} tool${toolCount===1?'':'s'}`;
+    else label.textContent='Activity';
+  }
+  if(list) list.textContent=parts.join(' · ')||'tools / thinking';
+  if(badge) badge.textContent=String(total);
+}
+
 // ── Live tool card helpers (called during SSE streaming) ──
 // Live cards are inserted INLINE inside #msgInner (tagged with data-live-tid)
 // so the streaming layout matches the settled layout produced by renderMessages
@@ -2823,52 +3989,80 @@ function appendLiveToolCard(tc){
   if(!S.session||!S.activeStreamId) return;
   let turn=$('liveAssistantTurn');
   if(!turn){
-    appendThinking();
-    turn=$('liveAssistantTurn');
+    turn=_createAssistantTurn();
+    turn.id='liveAssistantTurn';
+    if(S.session) turn.dataset.sessionId=S.session.session_id;  // see #1366
+    $('msgInner').appendChild(turn);
   }
   const inner=_assistantTurnBlocks(turn);
   if(!inner) return;
   const tid=tc.tid||'';
+  if(!isSimplifiedToolCalling()){
+    // Update existing card in place (tool_complete after tool_start)
+    if(tid){
+      const existing=inner.querySelector(`.tool-card-row[data-live-tid="${CSS.escape(tid)}"]`);
+      if(existing){
+        const replacement=buildToolCard(tc);
+        replacement.dataset.liveTid=tid;
+        existing.replaceWith(replacement);
+        // Keep #toolRunningRow alive — dots stay until text starts streaming
+        // or the next tool fires (which replaces them). Removing here caused
+        // a gap between tool completion and the first text token arriving.
+        return;
+      }
+    }
+    const row=buildToolCard(tc);
+    if(tid) row.dataset.liveTid=tid;
+    // Insert after whichever comes last: the current live assistant segment or
+    // the last tool card. This handles both cases:
+    //   text → tool1 → tool2  (no text between tools: anchor is card1)
+    //   text1 → tool1 → text2 → tool2  (text between tools: anchor is text2)
+    const children=Array.from(inner.children);
+    // Include .thinking-card-row so tool cards land AFTER a finalized thinking
+    // card, not between the text segment and thinking.
+    const anchor=children.filter(el=>el.matches('[data-live-assistant="1"],.tool-card-row,.thinking-card-row')).pop();
+    if(anchor) anchor.insertAdjacentElement('afterend', row);
+    else inner.appendChild(row);
+    // Add a 3-dot waiting indicator below the tool card so there's visual
+    // feedback while the tool is running. Removed when text starts streaming
+    // (ensureAssistantRow) or when tool_complete fires.
+    const oldWait=$('toolRunningRow');if(oldWait)oldWait.remove();
+    const waitRow=document.createElement('div');
+    waitRow.id='toolRunningRow';
+    waitRow.className='assistant-segment';
+    waitRow.innerHTML='<div class="thinking"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>';
+    row.insertAdjacentElement('afterend', waitRow);
+    if(typeof scrollIfPinned==='function') scrollIfPinned();
+    return;
+  }
+  const children=Array.from(inner.children);
+  const anchor=children.filter(el=>el.matches('[data-live-assistant="1"],.tool-call-group,.tool-card-row,.agent-activity-thinking')).pop();
+  const group=ensureActivityGroup(inner,{live:true,collapsed:false,anchor});
+  const body=group.querySelector('.tool-call-group-body');
   // Update existing card in place (tool_complete after tool_start)
   if(tid){
-    const existing=inner.querySelector(`.tool-card-row[data-live-tid="${CSS.escape(tid)}"]`);
+    const existing=body.querySelector(`.tool-card-row[data-live-tid="${CSS.escape(tid)}"]`);
     if(existing){
       const replacement=buildToolCard(tc);
       replacement.dataset.liveTid=tid;
       existing.replaceWith(replacement);
-      // Keep #toolRunningRow alive — dots stay until text starts streaming
-      // or the next tool fires (which replaces them). Removing here caused
-      // a gap between tool completion and the first text token arriving.
+      _syncToolCallGroupSummary(group);
       return;
     }
   }
   const row=buildToolCard(tc);
   if(tid) row.dataset.liveTid=tid;
-  // Insert after whichever comes last: the current live assistant segment or
-  // the last tool card. This handles both cases:
-  //   text → tool1 → tool2  (no text between tools: anchor is card1)
-  //   text1 → tool1 → text2 → tool2  (text between tools: anchor is text2)
-  const children=Array.from(inner.children);
-  // Include .thinking-card-row so tool cards land AFTER a finalized thinking
-  // card, not between the text segment and thinking.
-  const anchor=children.filter(el=>el.matches('[data-live-assistant="1"],.tool-card-row,.thinking-card-row')).pop();
-  if(anchor) anchor.insertAdjacentElement('afterend', row);
-  else inner.appendChild(row);
-  // Add a 3-dot waiting indicator below the tool card so there's visual
-  // feedback while the tool is running. Removed when text starts streaming
-  // (ensureAssistantRow) or when tool_complete fires.
-  const oldWait=$('toolRunningRow');if(oldWait)oldWait.remove();
-  const waitRow=document.createElement('div');
-  waitRow.id='toolRunningRow';
-  waitRow.className='assistant-segment';
-  waitRow.innerHTML='<div class="thinking"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>';
-  row.insertAdjacentElement('afterend', waitRow);
+  body.appendChild(row);
+  _syncToolCallGroupSummary(group);
   if(typeof scrollIfPinned==='function') scrollIfPinned();
 }
 
 function clearLiveToolCards(){
   const inner=_assistantTurnBlocks($('liveAssistantTurn'));
-  if(inner) inner.querySelectorAll('.tool-card-row[data-live-tid]').forEach(el=>el.remove());
+  if(inner) inner.querySelectorAll('.tool-call-group[data-live-tool-call-group],.tool-card-row[data-live-tid]').forEach(el=>el.remove());
+  // Reset the per-turn user expand intent so the next turn starts at the
+  // default collapsed state (#1298).
+  if(typeof _clearLiveActivityUserIntent==='function') _clearLiveActivityUserIntent();
   // Legacy #liveToolCards container cleanup — kept for safety in case any
   // leftover cards were inserted there before this refactor took effect.
   const container=$('liveToolCards');
@@ -2979,12 +4173,153 @@ function highlightCode(container) {
   Prism.highlightAllUnder(el);
 }
 
+// Lazy load js-yaml for YAML tree view support
+let _jsyamlLoading=false;
+function _loadJsyamlThen(cb){
+  if(typeof jsyaml!=='undefined'){ cb(); return; }
+  if(_jsyamlLoading){ setTimeout(()=>_loadJsyamlThen(cb),100); return; }
+  _jsyamlLoading=true;
+  const s=document.createElement('script');
+  s.src='https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js';
+  s.integrity='sha384-8pLvVQkv7pCQqFk7AChLpdEe7gXz9h8GAb7cS0zVeJuKhxR5PU5aEET5pRpHZvxUorzdM';
+  s.crossOrigin='anonymous';
+  s.onload=()=>{ _jsyamlLoading=false; cb(); };
+  s.onerror=()=>{ _jsyamlLoading=false; }; // CDN blocked, fall back to raw
+  document.head.appendChild(s);
+}
+
+function initTreeViews(){
+  document.querySelectorAll('.code-tree-wrap:not([data-tree-init])').forEach(wrap=>{
+    const rawText=wrap.dataset.raw;
+    const lang=wrap.dataset.lang;
+    let parsed=null;
+    let parseFailed=false;
+    // Try JSON parse
+    try{ parsed=JSON.parse(rawText); }catch(e){ parseFailed=(lang==='json'); }
+    // YAML: lazy-load js-yaml if needed
+    if(!parsed && lang==='yaml'){
+      if(typeof jsyaml!=='undefined'){
+        try{ parsed=jsyaml.load(rawText); }catch(e){ parseFailed=true; }
+      }else{
+        // Defer: remove init marker so we retry after load.
+        // Note: if CDN load fails, s.onerror does NOT call back —
+        // the wrap stays un-initialised (raw view only), which is safe.
+        wrap.removeAttribute('data-tree-init');
+        _loadJsyamlThen(initTreeViews);
+        return;
+      }
+    }
+    // Mark as initialised only after we've committed to a render decision
+    wrap.setAttribute('data-tree-init','1');
+    if(!parsed || typeof parsed!=='object'){
+      if(parseFailed){
+        const hint=wrap.querySelector('.tree-raw-view');
+        if(hint&&!hint.querySelector('.tree-parse-note')){
+          const note=document.createElement('div');
+          note.className='tree-parse-note';
+          note.textContent=t('parse_failed_note')||'parse failed';
+          hint.parentNode.insertBefore(note,hint.nextSibling);
+        }
+      }
+      return; // leave as raw view
+    }
+    const lineCount=rawText.split('\n').length;
+    // Default to raw for short blocks (<10 lines), tree for longer
+    const showTree=lineCount>=10;
+    // Build tree DOM
+    const treeDiv=document.createElement('div');
+    treeDiv.className='tree-view'+(showTree?'':' tree-hidden');
+    treeDiv.appendChild(_buildTreeDOM(parsed, 0));
+    // Toggle button in header
+    const header=wrap.querySelector('.pre-header');
+    if(header){
+      const toggle=document.createElement('button');
+      toggle.className='tree-toggle-btn';
+      toggle.textContent=showTree?t('raw_view'):t('tree_view');
+      toggle.onclick=(e)=>{
+        e.stopPropagation();
+        const isTreeHidden=treeDiv.classList.contains('tree-hidden');
+        treeDiv.classList.toggle('tree-hidden',!isTreeHidden);
+        const rawPre=wrap.querySelector('.tree-raw-view');
+        if(rawPre) rawPre.style.display=isTreeHidden?'none':'';
+        toggle.textContent=isTreeHidden?t('raw_view'):t('tree_view');
+      };
+      header.style.display='flex';
+      header.style.justifyContent='space-between';
+      header.style.alignItems='center';
+      header.appendChild(toggle);
+    }
+    if(!showTree){
+      const rawPre=wrap.querySelector('.tree-raw-view');
+      if(rawPre) rawPre.style.display='';
+    } else {
+      const rawPre=wrap.querySelector('.tree-raw-view');
+      if(rawPre) rawPre.style.display='none';
+    }
+    wrap.appendChild(treeDiv);
+  });
+}
+
+function _buildTreeDOM(val, depth){
+  const el=document.createElement('div');
+  el.className='tree-node';
+  if(val===null){ el.innerHTML=`<span class="tree-val tree-null">null</span>`; return el; }
+  if(typeof val==='boolean'){ el.innerHTML=`<span class="tree-val tree-bool">${val}</span>`; return el; }
+  if(typeof val==='number'){ el.innerHTML=`<span class="tree-val tree-num">${val}</span>`; return el; }
+  if(typeof val==='string'){ el.innerHTML=`<span class="tree-val tree-str">&quot;${esc(val)}&quot;</span>`; return el; }
+  if(Array.isArray(val)){
+    el.classList.add('tree-array');
+    const collapsed=depth>=2;
+    const header=document.createElement('span');
+    header.className='tree-collapsible';
+    header.innerHTML=(collapsed?'▸ ': '▾ ')+`<span class="tree-bracket">[</span><span class="tree-count">${val.length}</span><span class="tree-bracket">]</span>`;
+    const body=document.createElement('div');
+    body.className='tree-children'+(collapsed?' tree-collapsed':'');
+    val.forEach((item,i)=>{
+      const child=document.createElement('div');
+      child.className='tree-item';
+      child.appendChild(_buildTreeDOM(item, depth+1));
+      if(i<val.length-1) child.innerHTML+='<span class="tree-comma">,</span>';
+      body.appendChild(child);
+    });
+    el.appendChild(header);
+    el.appendChild(body);
+    header.onclick=(()=>{const c=body.classList.contains('tree-collapsed'); body.classList.toggle('tree-collapsed'); header.innerHTML=(c?'▾ ':'▸ ')+`<span class="tree-bracket">[</span><span class="tree-count">${val.length}</span><span class="tree-bracket">]</span>`;});
+    return el;
+  }
+  if(typeof val==='object'){
+    el.classList.add('tree-object');
+    const keys=Object.keys(val);
+    const collapsed=depth>=2;
+    const header=document.createElement('span');
+    header.className='tree-collapsible';
+    header.innerHTML=(collapsed?'▸ ': '▾ ')+`<span class="tree-bracket">{</span><span class="tree-count">${keys.length}</span><span class="tree-bracket">}</span>`;
+    const body=document.createElement('div');
+    body.className='tree-children'+(collapsed?' tree-collapsed':'');
+    keys.forEach((key,i)=>{
+      const child=document.createElement('div');
+      child.className='tree-item';
+      child.innerHTML=`<span class="tree-key">&quot;${esc(key)}&quot;</span><span class="tree-colon">: </span>`;
+      child.appendChild(_buildTreeDOM(val[key], depth+1));
+      if(i<keys.length-1) child.innerHTML+='<span class="tree-comma">,</span>';
+      body.appendChild(child);
+    });
+    el.appendChild(header);
+    el.appendChild(body);
+    header.onclick=(()=>{const c=body.classList.contains('tree-collapsed'); body.classList.toggle('tree-collapsed'); header.innerHTML=(c?'▾ ':'▸ ')+`<span class="tree-bracket">{</span><span class="tree-count">${keys.length}</span><span class="tree-bracket">}</span>`;});
+    return el;
+  }
+  el.innerHTML=`<span class="tree-val">${esc(String(val))}</span>`;
+  return el;
+}
+
 function addCopyButtons(container){
   const el=container||$('msgInner');
   if(!el) return;
   el.querySelectorAll('pre > code').forEach(codeEl=>{
     const pre=codeEl.parentElement;
-    if(pre.querySelector('.code-copy-btn')) return;
+    const header=pre.previousElementSibling;
+    if(pre.querySelector('.code-copy-btn')||(header&&header.classList.contains('pre-header')&&header.querySelector('.code-copy-btn'))) return;
     const btn=document.createElement('button');
     btn.className='code-copy-btn';
     btn.textContent=t('copy');
@@ -2995,7 +4330,6 @@ function addCopyButtons(container){
         setTimeout(()=>{btn.textContent=t('copy');},1500);
       }).catch(()=>{btn.textContent=t('copy_failed');setTimeout(()=>{btn.textContent=t('copy');},1500);});
     };
-    const header=pre.previousElementSibling;
     if(header&&header.classList.contains('pre-header')){
       header.style.display='flex';
       header.style.justifyContent='space-between';
@@ -3011,6 +4345,293 @@ function addCopyButtons(container){
 
 let _mermaidLoading=false;
 let _mermaidReady=false;
+
+function loadDiffInline(){
+  const DIFF_MAX_SIZE=512*1024; // 512 KB cap for inline diff rendering
+  document.querySelectorAll('.diff-inline-load:not([data-loaded])').forEach(el=>{
+    el.setAttribute('data-loaded','1');
+    const path=el.dataset.path;
+    fetch('api/media?path='+encodeURIComponent(path))
+      .then(r=>{if(!r.ok) throw new Error(r.status);return r.text();})
+      .then(text=>{
+        if(text.length>DIFF_MAX_SIZE){
+          el.outerHTML=`<div class="diff-inline-error">${esc(path.split('/').pop())}<br><span style="color:var(--muted);font-size:12px">${t('diff_too_large')}</span></div>`;
+          return;
+        }
+        const lines=text.split('\n').map(line=>{
+          const e=esc(line);
+          if(e.startsWith('@@')) return `<span class="diff-line diff-hunk">${e}</span>`;
+          if(e.startsWith('+')) return `<span class="diff-line diff-plus">${e}</span>`;
+          if(e.startsWith('-')) return `<span class="diff-line diff-minus">${e}</span>`;
+          return `<span class="diff-line">${e}</span>`;
+        }).join('\n');
+        el.outerHTML=`<div class="diff-inline"><div class="pre-header">${esc(path.split('/').pop())}</div><pre class="diff-block"><code>${lines}</code></pre></div>`;
+      })
+      .catch(()=>{
+        el.outerHTML=`<div class="diff-inline-error">${esc(path.split('/').pop())}<br><span style="color:var(--muted);font-size:12px">${t('diff_error')}</span></div>`;
+      });
+  });
+}
+
+function loadCsvInline(){
+  const CSV_MAX_SIZE=256*1024; // 256 KB cap for inline CSV rendering
+  document.querySelectorAll('.csv-inline-load:not([data-loaded])').forEach(el=>{
+    el.setAttribute('data-loaded','1');
+    const path=el.dataset.path;
+    fetch('api/media?path='+encodeURIComponent(path))
+      .then(r=>{if(!r.ok) throw new Error(r.status);return r.text();})
+      .then(text=>{
+        if(text.length>CSV_MAX_SIZE){
+          el.outerHTML=`<div class="diff-inline-error">${esc(path.split('/').pop())}<br><span style="color:var(--muted);font-size:12px">${t('csv_too_large')}</span></div>`;
+          return;
+        }
+        const rows=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').filter(r=>r.trim());
+        if(rows.length<2){
+          el.outerHTML=`<div class="diff-inline-error">${esc(path.split('/').pop())}<br><span style="color:var(--muted);font-size:12px">${t('csv_no_data')}</span></div>`;
+          return;
+        }
+        // Auto-detect separator (comma, semicolon, tab)
+        // Heuristic: uses the first separator found in the header row. Edge case:
+        // quoted fields containing commas without non-quoted commas in the header
+        // could cause misdetection — acceptable trade-off for a preview renderer.
+        const firstLine=rows[0];
+        const separators=[',',';','\t'];
+        let sep=separators.find(s=>firstLine.includes(s))||',';
+        const headers=rows[0].split(sep).map(c=>c.trim().replace(/^["']|["']$/g,''));
+        const bodyRows=rows.slice(1).map(r=>'<tr>'+r.split(sep).map(c=>`<td>${esc(c.trim().replace(/^["']|["']$/g,''))}</td>`).join('')+'</tr>').join('');
+        const headerRow=headers.map(h=>`<th>${esc(h)}</th>`).join('');
+        el.outerHTML=`<div class="csv-table-wrap"><div class="pre-header">${esc(path.split('/').pop())} <span style="opacity:.5;font-size:11px">${t('csv_header_note')}</span></div><table class="csv-table"><thead><tr>${headerRow}</tr></thead><tbody>${bodyRows}</tbody></table></div>`;
+      })
+      .catch(()=>{
+        el.outerHTML=`<div class="diff-inline-error">${esc(path.split('/').pop())}<br><span style="color:var(--muted);font-size:12px">${t('csv_error')}</span></div>`;
+      });
+  });
+}
+
+function loadExcalidrawInline(){
+  const EXCALIDRAW_MAX_SIZE=512*1024; // 512 KB cap
+  document.querySelectorAll('.excalidraw-inline-load:not([data-loaded])').forEach(el=>{
+    el.setAttribute('data-loaded','1');
+    const path=el.dataset.path;
+    fetch('api/media?path='+encodeURIComponent(path))
+      .then(r=>{if(!r.ok) throw new Error(r.status);return r.text();})
+      .then(text=>{
+        if(text.length>EXCALIDRAW_MAX_SIZE){
+          el.outerHTML=`<div class="diff-inline-error">${esc(path.split('/').pop())}<br><span style="color:var(--muted);font-size:12px">${t('excalidraw_too_large')}</span></div>`;
+          return;
+        }
+        // Validate it looks like Excalidraw JSON
+        let data;
+        try{data=JSON.parse(text);}catch(e){
+          el.outerHTML=`<div class="diff-inline-error">${esc(path.split('/').pop())}<br><span style="color:var(--muted);font-size:12px">${t('excalidraw_invalid')}</span></div>`;
+          return;
+        }
+        if(!data.type||data.type!=='excalidraw'){
+          el.outerHTML=`<div class="diff-inline-error">${esc(path.split('/').pop())}<br><span style="color:var(--muted);font-size:12px">${t('excalidraw_invalid')}</span></div>`;
+          return;
+        }
+        const fname=esc(path.split('/').pop());
+        const downloadUrl='api/media?path='+encodeURIComponent(path)+'&download=1';
+        el.outerHTML=`<div class="excalidraw-embed-wrap" title="${t('excalidraw_simplified')}">
+  <div class="msg-artifact-header">
+    <span class="msg-media-label">${t('excalidraw_label')}</span>
+    <a class="excalidraw-open-link" href="${downloadUrl}" download="${fname}">${t('excalidraw_download')} ${fname}</a>
+  </div>
+  <div class="excalidraw-canvas" data-excalidraw='${esc(text)}'></div>
+</div>`;
+        // Lazy-init Excalidraw render after DOM insertion
+        requestAnimationFrame(()=>_renderExcalidrawCanvases());
+      })
+      .catch(()=>{
+        el.outerHTML=`<div class="diff-inline-error">${esc(path.split('/').pop())}<br><span style="color:var(--muted);font-size:12px">${t('excalidraw_error')}</span></div>`;
+      });
+  });
+}
+
+let _excalidrawScriptLoaded=false;
+function _renderExcalidrawCanvases(){
+  document.querySelectorAll('.excalidraw-canvas:not([data-rendered])').forEach(el=>{
+    el.setAttribute('data-rendered','1');
+    const dataStr=el.getAttribute('data-excalidraw');
+    if(!dataStr) return;
+    // Render a simple SVG preview using the Excalidraw elements
+    try{
+      const data=JSON.parse(dataStr);
+      const elements=data.elements||[];
+      if(!elements.length){el.innerHTML=`<div class="excalidraw-empty">${t('excalidraw_empty')}</div>`;return;}
+      // Calculate bounds
+      let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+      elements.forEach(el=>{
+        const b=[el.x||0,el.y||0,(el.x||0)+(el.width||0),(el.y||0)+(el.height||0)];
+        minX=Math.min(minX,b[0]);minY=Math.min(minY,b[1]);
+        maxX=Math.max(maxX,b[2]);maxY=Math.max(maxY,b[3]);
+      });
+      const pad=20;minX-=pad;minY-=pad;maxX+=pad;maxY+=pad;
+      const w=Math.max(maxX-minX,200);const h=Math.max(maxY-minY,150);
+      // SVG attributes are rendered via innerHTML below, so attacker-controlled
+      // values from JSON (e.g. strokeColor='red"/><script>...') would break out
+      // of the attribute. Escape strings; coerce numerics.
+      const _sa=v=>String(v==null?'':v).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const _num=(v,fb)=>{const n=Number(v);return Number.isFinite(n)?n:fb;};
+      const svgParts=[`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${_num(minX,0)} ${_num(minY,0)} ${_num(w,200)} ${_num(h,150)}" class="excalidraw-svg">`];
+      elements.forEach(el=>{
+        const stroke=_sa(el.strokeColor||'#1e1e1e');
+        const fill=_sa(el.backgroundColor||'transparent');
+        const sw=_num(el.strokeWidth,2);
+        const x=_num(el.x,0),y=_num(el.y,0),w=_num(el.width,0),h=_num(el.height,0);
+        if(el.type==='rectangle'){
+          svgParts.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" stroke="${stroke}" stroke-width="${sw}" fill="${fill}" rx="${el.roundness?.type===3?8:0}"/>`);
+        }else if(el.type==='diamond'){
+          const cx=x+w/2,cy=y+h/2;
+          svgParts.push(`<polygon points="${cx},${y} ${x+w},${cy} ${cx},${y+h} ${x},${cy}" stroke="${stroke}" stroke-width="${sw}" fill="${fill}"/>`);
+        }else if(el.type==='ellipse'){
+          svgParts.push(`<ellipse cx="${x+w/2}" cy="${y+h/2}" rx="${w/2}" ry="${h/2}" stroke="${stroke}" stroke-width="${sw}" fill="${fill}"/>`);
+        }else if(el.type==='line'){
+          const pts=(el.points||[]).filter(p=>Array.isArray(p)&&p.length>=2);
+          if(!pts.length) return;
+          let d=`M ${_num(x+_num(pts[0][0],0),0)} ${_num(y+_num(pts[0][1],0),0)}`;
+          for(let i=1;i<pts.length;i++) d+=` L ${_num(x+_num(pts[i][0],0),0)} ${_num(y+_num(pts[i][1],0),0)}`;
+          svgParts.push(`<path d="${d}" stroke="${stroke}" stroke-width="${sw}" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`);
+        }else if(el.type==='arrow'){
+          const pts=(el.points||[]).filter(p=>Array.isArray(p)&&p.length>=2);
+          if(!pts.length) return;
+          let d=`M ${_num(x+_num(pts[0][0],0),0)} ${_num(y+_num(pts[0][1],0),0)}`;
+          for(let i=1;i<pts.length;i++) d+=` L ${_num(x+_num(pts[i][0],0),0)} ${_num(y+_num(pts[i][1],0),0)}`;
+          svgParts.push(`<path d="${d}" stroke="${stroke}" stroke-width="${sw}" fill="none" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowhead)"/>`);
+        }else if(el.type==='text'){
+          const fontSize=_num(el.fontSize,20);
+          const txt=String(el.text==null?'':el.text);
+          const lines=txt.split('\n');
+          lines.forEach((line,i)=>{
+            svgParts.push(`<text x="${x}" y="${y+i*fontSize*1.2+fontSize}" fill="${stroke}" font-size="${fontSize}" font-family="Virgil, Segoe UI Emoji, sans-serif">${esc(line)}</text>`);
+          });
+        }else if(el.type==='draw'){
+          const pts=(el.points||[]).filter(p=>Array.isArray(p)&&p.length>=2);
+          if(pts.length>1){
+            let d=`M ${_num(x+_num(pts[0][0],0),0)} ${_num(y+_num(pts[0][1],0),0)}`;
+            for(let i=1;i<pts.length;i++) d+=` L ${_num(x+_num(pts[i][0],0),0)} ${_num(y+_num(pts[i][1],0),0)}`;
+            svgParts.push(`<path d="${d}" stroke="${stroke}" stroke-width="${sw}" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`);
+          }
+        }
+        // Unknown element types (e.g. image, frame, group, freedraw) are
+        // silently skipped to avoid breaking the render. This is a simplified
+        // SVG preview, not a pixel-identical Excalidraw canvas reproduction.
+      });
+      // Arrow marker definition
+      svgParts.unshift(`<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#1e1e1e"/></marker></defs>`);
+      svgParts.push('</svg>');
+      el.innerHTML=svgParts.join('');
+    }catch(e){
+      el.innerHTML=`<div class="excalidraw-empty">${t('excalidraw_render_error')}</div>`;
+    }
+  });
+}
+
+// ── PDF inline preview (first page) ────────────────────────────────────────
+// NOTE: PDF.js is loaded from CDN (jsdelivr). Offline/air-gapped deployments
+// will not get inline previews; the 15 s fallback timeout degrades to a
+// download link in that case. The 4 MB size cap is checked client-side after
+// the full buffer is received — ideally the server would enforce it before
+// streaming (out of scope for this client-side PR).
+let _pdfjsReady=false, _pdfjsLoading=false;
+function loadPdfInline(){
+  const PDF_MAX_SIZE=4*1024*1024; // 4 MB cap for inline PDF preview
+  document.querySelectorAll('.pdf-preview-load:not([data-loaded])').forEach(el=>{
+    el.setAttribute('data-loaded','1');
+    const path=el.dataset.path;
+    const fname=path.split('/').pop()||path;
+    const loadPdf=(pdfjsLib)=>{
+      fetch('api/media?path='+encodeURIComponent(path))
+        .then(r=>{if(!r.ok) throw new Error(r.status); return r.arrayBuffer();})
+        .then(buf=>{
+          if(buf.byteLength>PDF_MAX_SIZE){
+            el.outerHTML=`<div class="pdf-preview-fallback"><a class="msg-media-link" href="api/media?path=${encodeURIComponent(path)}&download=1" download="${esc(fname)}">📎 ${esc(fname)}</a><br><span style="color:var(--muted);font-size:12px">${t('pdf_too_large')}</span></div>`;
+            return;
+          }
+          return pdfjsLib.getDocument({data:buf}).promise;
+        })
+        .then(pdf=>{
+          if(!pdf) return;
+          pdf.getPage(1).then(page=>{
+            const canvas=document.createElement('canvas');
+            const scale=1.5;
+            const viewport=page.getViewport({scale});
+            canvas.width=viewport.width;
+            canvas.height=viewport.height;
+            canvas.className='pdf-preview-canvas';
+            page.render({canvasContext:canvas.getContext('2d'),viewport}).promise.then(()=>{
+              // Canvas bitmap is runtime state, not part of HTML serialization.
+              // Attach the canvas as a DOM node — interpolating its serialized
+              // form into a template string parses back as an empty canvas.
+              const dlUrl='api/media?path='+encodeURIComponent(path)+'&download=1';
+              const wrap=document.createElement('div');
+              wrap.className='pdf-preview-wrap';
+              wrap.innerHTML=`<div class="pdf-preview-header"><span>📄 ${esc(fname)}</span><a href="${dlUrl}" download="${esc(fname)}" class="pdf-download-link">${t('pdf_download')} ↓</a></div><div class="pdf-preview-body"></div>`;
+              wrap.querySelector('.pdf-preview-body').appendChild(canvas);
+              el.replaceWith(wrap);
+            });
+          });
+        })
+        .catch(()=>{
+          const dlUrl='api/media?path='+encodeURIComponent(path)+'&download=1';
+          el.outerHTML=`<div class="pdf-preview-fallback"><a class="msg-media-link" href="${dlUrl}" download="${esc(fname)}">📎 ${esc(fname)}</a><br><span style="color:var(--muted);font-size:12px">${t('pdf_error')}</span></div>`;
+        });
+    };
+    if(_pdfjsReady){
+      loadPdf(window._pdfjsLib);
+    } else if(!_pdfjsLoading){
+      _pdfjsLoading=true;
+      const s=document.createElement('script');
+      s.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.155/build/pdf.min.mjs';
+      s.type='module';
+      s.textContent=`
+        import * as pdfjsLib from '${s.src}';
+        pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.155/build/pdf.worker.min.mjs';
+        window._pdfjsLib=pdfjsLib;
+        window._pdfjsReady=true;
+        window.dispatchEvent(new Event('pdfjs-ready'));
+      `;
+      document.head.appendChild(s);
+      window.addEventListener('pdfjs-ready',()=>{ _pdfjsReady=true; loadPdf(window._pdfjsLib); },{once:true});
+      setTimeout(()=>{
+        if(!_pdfjsReady){
+          const dlUrl='api/media?path='+encodeURIComponent(path)+'&download=1';
+          if(el.parentNode){
+            el.outerHTML=`<div class="pdf-preview-fallback"><a class="msg-media-link" href="${dlUrl}" download="${esc(fname)}">📎 ${esc(fname)}</a><br><span style="color:var(--muted);font-size:12px">${t('pdf_error')}</span></div>`;
+          }
+        }
+      },15000);
+    } else {
+      window.addEventListener('pdfjs-ready',()=>{ loadPdf(window._pdfjsLib); },{once:true});
+    }
+  });
+}
+
+// ── HTML inline preview (sandboxed iframe) ─────────────────────────────────
+function loadHtmlInline(){
+  const HTML_MAX_SIZE=256*1024; // 256 KB cap for inline HTML preview
+  document.querySelectorAll('.html-preview-load:not([data-loaded])').forEach(el=>{
+    el.setAttribute('data-loaded','1');
+    const path=el.dataset.path;
+    const fname=path.split('/').pop()||path;
+    fetch('api/media?path='+encodeURIComponent(path))
+      .then(r=>{if(!r.ok) throw new Error(r.status); return r.text();})
+      .then(html=>{
+        if(html.length>HTML_MAX_SIZE){
+          const dlUrl='api/media?path='+encodeURIComponent(path)+'&download=1';
+          el.outerHTML=`<div class="html-preview-fallback"><a class="msg-media-link" href="${dlUrl}" download="${esc(fname)}">📎 ${esc(fname)}</a><br><span style="color:var(--muted);font-size:12px">${t('html_too_large')}</span></div>`;
+          return;
+        }
+        const dlUrl='api/media?path='+encodeURIComponent(path)+'&download=1';
+        const safeHtml=html.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        el.outerHTML=`<div class="html-preview-wrap"><div class="html-preview-header"><span>${t('html_sandbox_label')}</span><a href="${dlUrl}" download="${esc(fname)}" class="html-open-link">${t('html_open_full')} ↗</a></div><iframe srcdoc="${safeHtml}" sandbox="allow-scripts" class="html-preview-iframe" loading="lazy"></iframe></div>`;
+      })
+      .catch(()=>{
+        const dlUrl='api/media?path='+encodeURIComponent(path)+'&download=1';
+        el.outerHTML=`<div class="html-preview-fallback"><a class="msg-media-link" href="${dlUrl}" download="${esc(fname)}">📎 ${esc(fname)}</a><br><span style="color:var(--muted);font-size:12px">${t('html_error')}</span></div>`;
+      });
+  });
+}
 
 function renderMermaidBlocks(){
   const blocks=document.querySelectorAll('.mermaid-block:not([data-rendered])');
@@ -3043,10 +4664,17 @@ function renderMermaidBlocks(){
     const id=block.dataset.mermaidId||('m-'+Math.random().toString(36).slice(2));
     try{
       const {svg}=await mermaid.render(id,code);
+      const tmp=document.getElementById('d'+id);
+      if(tmp) tmp.remove();
       block.innerHTML=svg;
       block.classList.add('mermaid-rendered');
     }catch(e){
-      // Fall back to showing as a code block
+      const tmp=document.getElementById('d'+id);
+      if(tmp) tmp.remove();
+      // Fall back to showing as a code block. Remove the mermaid marker so a
+      // later render pass cannot retry this already-failed block.
+      block.classList.remove('mermaid-block');
+      block.classList.add('prewrap');
       block.innerHTML=`<div class="pre-header">mermaid</div><pre><code>${esc(code)}</code></pre>`;
     }
   });
@@ -3095,30 +4723,56 @@ function renderKatexBlocks(){
 
 function _thinkingMarkup(text=''){
   const clean=_sanitizeThinkingDisplayText(text);
+  const openClass=isSimplifiedToolCalling()?'':' open';
   return (clean&&String(clean).trim())
-    ? `<div class="thinking-card open"><div class="thinking-card-header" onclick="this.parentElement.classList.toggle('open')"><span class="thinking-card-icon">${li('lightbulb',14)}</span><span class="thinking-card-label">${t('thinking')}</span><span class="thinking-card-toggle">${li('chevron-right',12)}</span></div><div class="thinking-card-body"><pre>${esc(String(clean).trim())}</pre></div></div>`
+    ? `<div class="thinking-card${openClass}"><div class="thinking-card-header" onclick="this.parentElement.classList.toggle('open')"><span class="thinking-card-icon">${li('lightbulb',14)}</span><span class="thinking-card-label">${t('thinking')}</span><span class="thinking-card-toggle">${li('chevron-right',12)}</span></div><div class="thinking-card-body"><pre>${esc(String(clean).trim())}</pre></div></div>`
     : `<div class="thinking"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>`;
 }
 function finalizeThinkingCard(){
-  const row=$('thinkingRow');
-  if(!row) return;
-  // If the row is still just a spinner (no thinking content rendered),
-  // remove it entirely — it's the initial waiting dots.
-  const hasContent=row.querySelector('.thinking-card') || row.classList.contains('thinking-card-row');
-  if(!hasContent && row.getAttribute('data-thinking-active')==='1'){
-    row.remove();
+  // Guard: only finalize thinking card if we're looking at the session that started it.
+  // Without this check, switching tabs while a stream is running causes finalizeThinkingCard
+  // to remove/modify the thinking card DOM of the wrong session — the card belongs to the
+  // stream that started it, not the session currently displayed.
+  const _guardTurn = $('liveAssistantTurn');
+  if(_guardTurn && S.session && _guardTurn.dataset.sessionId !== S.session.session_id) return;
+  if(!isSimplifiedToolCalling()){
+    const row=$('thinkingRow');
+    if(!row) return;
+    // If the row is still just a spinner (no thinking content rendered),
+    // remove it entirely — it's the initial waiting dots.
+    const hasContent=row.querySelector('.thinking-card') || row.classList.contains('thinking-card-row');
+    if(!hasContent && row.getAttribute('data-thinking-active')==='1'){
+      row.remove();
+      return;
+    }
+    // If the user was watching (scroll pinned = at bottom), scroll the thinking
+    // card back to the top so the completed response is visible underneath without
+    // the thinking content blocking it. If they scrolled up to read history,
+    // leave their scroll position intact.
+    if(_scrollPinned){
+      const body=row&&row.querySelector('.thinking-card-body');
+      if(body) body.scrollTop=0;
+    }
+    row.removeAttribute('id');
+    row.removeAttribute('data-thinking-active');
     return;
   }
-  // If the user was watching (scroll pinned = at bottom), scroll the thinking
-  // card back to the top so the completed response is visible underneath without
-  // the thinking content blocking it. If they scrolled up to read history,
-  // leave their scroll position intact.
-  if(_scrollPinned){
-    const body=row&&row.querySelector('.thinking-card-body');
-    if(body) body.scrollTop=0;
+  const turn=$('liveAssistantTurn');
+  const group=turn&&turn.querySelector('.tool-call-group[data-live-tool-call-group="1"]');
+  if(group){
+    // Respect the user's explicit expand intent (#1298) — only force-collapse
+    // when the user has not manually expanded this turn's activity group, or
+    // has manually collapsed it. Otherwise the panel snaps shut whenever new
+    // activity arrives, even mid-read.
+    if(_liveActivityUserExpanded !== true){
+      group.classList.add('tool-call-group-collapsed');
+      const summary=group.querySelector('.tool-call-group-summary');
+      if(summary) summary.setAttribute('aria-expanded','false');
+    }
+    const active=group.querySelector('.agent-activity-thinking[data-thinking-active="1"]');
+    if(active) active.removeAttribute('data-thinking-active');
+    _syncToolCallGroupSummary(group);
   }
-  row.removeAttribute('id');
-  row.removeAttribute('data-thinking-active');
 }
 function appendThinking(text=''){
   // Guard: ignore if session was switched during an async SSE stream.
@@ -3130,43 +4784,85 @@ function appendThinking(text=''){
   if(!turn){
     turn=_createAssistantTurn();
     turn.id='liveAssistantTurn';
+    if(S.session) turn.dataset.sessionId=S.session.session_id;  // see #1366
     $('msgInner').appendChild(turn);
   }
   const blocks=_assistantTurnBlocks(turn);
-  let row=$('thinkingRow');
+  if(!blocks) return;
+  if(!isSimplifiedToolCalling()){
+    let row=$('thinkingRow');
+    if(!row){
+      row=document.createElement('div');
+      row.className='assistant-segment';
+      row.id='thinkingRow';
+      row.setAttribute('data-thinking-active','1');
+      // Insert after whichever comes last: a live assistant segment or a tool card.
+      // This mirrors appendLiveToolCard's anchor logic so thinking always appears
+      // in the right position in the interleaved sequence.
+      // Also skip #toolRunningRow (dots) — thinking should go before dots, not after.
+      const allChildren=Array.from(blocks.children);
+      const anchor=allChildren.filter(el=>
+        el.id!=='toolRunningRow' &&
+        el.matches('[data-live-assistant="1"],.tool-card-row')
+      ).pop();
+      if(anchor) anchor.insertAdjacentElement('afterend', row);
+      else blocks.appendChild(row);
+    }
+    row.className=(text&&String(text).trim())?'assistant-segment thinking-card-row':'assistant-segment';
+    row.innerHTML=_thinkingMarkup(text);
+    scrollIfPinned();
+    // Auto-scroll the thinking card body to bottom if the user is watching
+    // (scroll pinned). If the user scrolled up to read history, leave it alone.
+    if(_scrollPinned){
+      const body=row&&row.querySelector('.thinking-card-body');
+      if(body) body.scrollTop=body.scrollHeight;
+    }
+    return;
+  }
+  if(!String(text||'').trim()){
+    scrollIfPinned();
+    return;
+  }
+  const allChildren=Array.from(blocks.children);
+  const anchor=allChildren.filter(el=>
+    el.id!=='toolRunningRow' &&
+    el.matches('[data-live-assistant="1"],.tool-call-group,.tool-card-row,.agent-activity-thinking')
+  ).pop();
+  const group=ensureActivityGroup(blocks,{live:true,collapsed:true,anchor});
+  const body=group&&group.querySelector('.tool-call-group-body');
+  if(!body) return;
+  let row=body.querySelector('.agent-activity-thinking[data-thinking-active="1"]');
   if(!row){
     row=document.createElement('div');
-    row.className='assistant-segment';
-    row.id='thinkingRow';
+    row.className='agent-activity-thinking';
     row.setAttribute('data-thinking-active','1');
-    // Insert after whichever comes last: a live assistant segment or a tool card.
-    // This mirrors appendLiveToolCard's anchor logic so thinking always appears
-    // in the right position in the interleaved sequence.
-    // Also skip #toolRunningRow (dots) — thinking should go before dots, not after.
-    const allChildren=Array.from(blocks.children);
-    const anchor=allChildren.filter(el=>
-      el.id!=='toolRunningRow' &&
-      el.matches('[data-live-assistant="1"],.tool-card-row')
-    ).pop();
-    if(anchor) anchor.insertAdjacentElement('afterend', row);
-    else blocks.appendChild(row);
+    body.insertBefore(row, body.firstChild);
   }
-  row.className=(text&&String(text).trim())?'assistant-segment thinking-card-row':'assistant-segment';
   row.innerHTML=_thinkingMarkup(text);
+  _syncToolCallGroupSummary(group);
   scrollIfPinned();
-  // Auto-scroll the thinking card body to bottom if the user is watching
-  // (scroll pinned). If the user scrolled up to read history, leave it alone.
   if(_scrollPinned){
-    const body=row&&row.querySelector('.thinking-card-body');
-    if(body) body.scrollTop=body.scrollHeight;
+    const thinkingBody=row&&row.querySelector('.thinking-card-body');
+    if(thinkingBody) thinkingBody.scrollTop=thinkingBody.scrollHeight;
   }
 }
 function updateThinking(text=''){appendThinking(text);}
 function removeThinking(){
-  const el=$('thinkingRow');
-  if(el) el.remove();
+  if(!isSimplifiedToolCalling()){
+    const el=$('thinkingRow');
+    if(el) el.remove();
+    const turn=$('liveAssistantTurn');
+    const blocks=_assistantTurnBlocks(turn);
+    if(turn&&blocks&&!blocks.children.length) turn.remove();
+    return;
+  }
   const turn=$('liveAssistantTurn');
   const blocks=_assistantTurnBlocks(turn);
+  if(blocks) blocks.querySelectorAll('.agent-activity-thinking').forEach(el=>el.remove());
+  if(blocks) blocks.querySelectorAll('.tool-call-group[data-agent-activity-group="1"]').forEach(group=>{
+    _syncToolCallGroupSummary(group);
+    if(!group.querySelector('.tool-card-row,.agent-activity-thinking')) group.remove();
+  });
   if(turn&&blocks&&!blocks.children.length) turn.remove();
 }
 
@@ -3254,6 +4950,7 @@ function _renderTreeItems(container, entries, depth){
     const el=document.createElement('div');el.className='file-item';
     el.style.paddingLeft=(8+depth*16)+'px';
     el.setAttribute('draggable','true');
+    el.oncontextmenu=(e)=>{e.preventDefault();e.stopPropagation();_showFileContextMenu(e,item);};
     el.ondragstart=(e)=>{e.dataTransfer.setData('application/ws-path',item.path);e.dataTransfer.setData('application/ws-type',item.type);e.dataTransfer.effectAllowed='copy';};
 
     if(item.type==='dir'){
@@ -3290,6 +4987,15 @@ function _renderTreeItems(container, entries, depth){
                 session_id:S.session.session_id,path:item.path,new_name:newName
               })});
               showToast(t('renamed_to')+newName);
+              // Update expanded dirs cache key if renaming a directory
+              if(item.type==='dir'&&S._expandedDirs){
+                S._expandedDirs.delete(item.path);
+                const parent=item.path.includes('/')?item.path.substring(0,item.path.lastIndexOf('/')):'.';
+                const newPath=parent==='.'?newName:parent+'/'+newName;
+                S._expandedDirs.add(newPath);
+                if(S._dirCache[item.path]){S._dirCache[newPath]=S._dirCache[item.path];delete S._dirCache[item.path];}
+                if(typeof _saveExpandedDirs==='function')_saveExpandedDirs();
+              }
               // Invalidate cache and re-render
               delete S._dirCache[S.currentDir];
               await loadDir(S.currentDir);
@@ -3320,11 +5026,16 @@ function _renderTreeItems(container, entries, depth){
       el.appendChild(sizeEl);
     }
 
-    // Delete button -- for files
+    // Delete button -- for files and directories
     if(item.type==='file'){
       const del=document.createElement('button');
       del.className='file-del-btn';del.title=t('delete_title');del.textContent='\u00d7';
       del.onclick=async(e)=>{e.stopPropagation();await deleteWorkspaceFile(item.path,item.name);};
+      el.appendChild(del);
+    }else if(item.type==='dir'){
+      const del=document.createElement('button');
+      del.className='file-del-btn';del.title=t('delete_title');del.textContent='\u00d7';
+      del.onclick=async(e)=>{e.stopPropagation();await deleteWorkspaceDir(item.path,item.name);};
       el.appendChild(del);
     }
 
@@ -3369,6 +5080,77 @@ function _renderTreeItems(container, entries, depth){
       }
     }
   }
+}
+
+async function deleteWorkspaceDir(relPath, name){
+  if(!S.session)return;
+  const ok=await showConfirmDialog({title:t('delete_dir_confirm',name),message:'',confirmLabel:'Delete',danger:true,focusCancel:true});
+  if(!ok)return;
+  try{
+    await api('/api/file/delete',{method:'POST',body:JSON.stringify({session_id:S.session.session_id,path:relPath,recursive:true})});
+    showToast(t('deleted')+name);
+    // Remove from expanded dirs cache
+    if(S._expandedDirs){S._expandedDirs.delete(relPath);if(typeof _saveExpandedDirs==='function')_saveExpandedDirs();}
+    delete S._dirCache[relPath];
+    await loadDir(S.currentDir);
+  }catch(e){setStatus(t('delete_failed')+e.message);}
+}
+
+function _showFileContextMenu(e, item){
+  document.querySelectorAll('.file-ctx-menu').forEach(el=>el.remove());
+  const menu=document.createElement('div');
+  menu.className='file-ctx-menu';
+  menu.style.cssText='position:fixed;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 0;z-index:9999;min-width:140px;box-shadow:0 4px 16px rgba(0,0,0,.35);';
+  // Keep menu within viewport
+  const vw=window.innerWidth,vh=window.innerHeight;
+  menu.style.left=(e.clientX+140>vw?e.clientX-150:e.clientX)+'px';
+  menu.style.top=(e.clientY+100>vh?e.clientY-100:e.clientY)+'px';
+
+  // Rename
+  const renameItem=document.createElement('div');
+  renameItem.textContent=t('rename_title');
+  renameItem.style.cssText='padding:7px 14px;cursor:pointer;font-size:13px;color:var(--text);';
+  renameItem.onmouseenter=()=>renameItem.style.background='var(--hover)';
+  renameItem.onmouseleave=()=>renameItem.style.background='';
+  renameItem.onclick=()=>{menu.remove();_inlineRenameFileItem(item);};
+  menu.appendChild(renameItem);
+
+  // Divider + Delete
+  const sep=document.createElement('hr');
+  sep.style.cssText='border:none;border-top:1px solid var(--border);margin:4px 0;';
+  menu.appendChild(sep);
+  const delItem=document.createElement('div');
+  delItem.textContent=t('delete_title');
+  delItem.style.cssText='padding:7px 14px;cursor:pointer;font-size:13px;color:var(--error,#e94560);';
+  delItem.onmouseenter=()=>delItem.style.background='var(--hover)';
+  delItem.onmouseleave=()=>delItem.style.background='';
+  delItem.onclick=()=>{menu.remove();if(item.type==='dir')deleteWorkspaceDir(item.path,item.name);else deleteWorkspaceFile(item.path,item.name);};
+  menu.appendChild(delItem);
+
+  document.body.appendChild(menu);
+  const dismiss=()=>{menu.remove();document.removeEventListener('click',dismiss);};
+  setTimeout(()=>document.addEventListener('click',dismiss),0);
+}
+
+async function _inlineRenameFileItem(item){
+  if(!S.session)return;
+  const newName=await showPromptDialog({message:t('rename_prompt'),defaultValue:item.name,placeholder:item.name,confirmLabel:t('rename_title')});
+  if(!newName||newName===item.name)return;
+  try{
+    await api('/api/file/rename',{method:'POST',body:JSON.stringify({session_id:S.session.session_id,path:item.path,new_name:newName})});
+    showToast(t('renamed_to')+newName);
+    // Update expanded dirs cache key if renaming a directory
+    if(item.type==='dir'&&S._expandedDirs){
+      S._expandedDirs.delete(item.path);
+      const parent=item.path.includes('/')?item.path.substring(0,item.path.lastIndexOf('/')):'.';
+      const newPath=parent==='.'?newName:parent+'/'+newName;
+      S._expandedDirs.add(newPath);
+      if(S._dirCache[item.path]){S._dirCache[newPath]=S._dirCache[item.path];delete S._dirCache[item.path];}
+      if(typeof _saveExpandedDirs==='function')_saveExpandedDirs();
+    }
+    delete S._dirCache[S.currentDir];
+    await loadDir(S.currentDir);
+  }catch(err){showToast(t('rename_failed')+err.message);}
 }
 
 async function deleteWorkspaceFile(relPath, name){
@@ -3446,19 +5228,27 @@ async function promptNewFolder(){
   }catch(e){setStatus(t('folder_create_failed')+e.message);}
 }
 
-function renderTray(){
+function renderTray(){ // non-media files use paperclip chip
   const tray=$('attachTray');tray.innerHTML='';
   if(!S.pendingFiles.length){tray.classList.remove('has-files');updateSendBtn();return;}
   tray.classList.add('has-files');
   updateSendBtn();
   S.pendingFiles.forEach((f,i)=>{
     const chip=document.createElement('div');chip.className='attach-chip';
-    // Image files get a thumbnail preview; other files keep the paperclip chip
-    if(_IMAGE_EXTS.test(f.name)){
+    const mediaKind=_mediaKindForName(f.name);
+    if(_IMAGE_EXTS.test(f.name)||mediaKind==='audio'||mediaKind==='video'){
       const blobUrl=URL.createObjectURL(f);
-      chip.className='attach-chip attach-chip--image';
+      chip.className='attach-chip attach-chip--media attach-chip--'+mediaKind; // attach-chip--audio attach-chip--video
       chip.dataset.blobUrl=blobUrl;
-      chip.innerHTML=`<img class="attach-thumb" src="${esc(blobUrl)}" alt="${esc(f.name)}" title="${esc(f.name)}"><button title="${t('remove_title')}">${li('x',12)}</button>`;
+      if(mediaKind==='image'){
+        chip.innerHTML=`<img class="attach-thumb" src="${esc(blobUrl)}" alt="${esc(f.name)}" title="${esc(f.name)}"><button title="${t('remove_title')}">${li('x',12)}</button>`;
+      } else if(_SVG_EXTS.test(f.name)){
+        chip.innerHTML=`<img class="attach-thumb attach-thumb--svg" src="${esc(blobUrl)}" alt="${esc(f.name)}" title="${esc(f.name)}"><button title="${t('remove_title')}">${li('x',12)}</button>`;
+      } else if(mediaKind==='audio'){
+        chip.innerHTML=`<span class="attach-chip-media">🎵 ${esc(f.name)}</span><audio controls preload="metadata" src="${esc(blobUrl)}"></audio><button title="${t('remove_title')}">${li('x',12)}</button>`;
+      } else if(mediaKind==='video'){
+        chip.innerHTML=`<span class="attach-chip-media">🎬 ${esc(f.name)}</span><video controls preload="metadata" src="${esc(blobUrl)}"></video><button title="${t('remove_title')}">${li('x',12)}</button>`;
+      }
     } else {
       chip.innerHTML=`${li('paperclip',12)} ${esc(f.name)} <button title="${t('remove_title')}">${li('x',12)}</button>`;
     }
@@ -3481,17 +5271,27 @@ async function uploadPendingFiles(){
     const f=S.pendingFiles[i];const fd=new FormData();
     fd.append('session_id',S.session.session_id);fd.append('file',f,f.name);
     try{
-      const res=await fetch(new URL('api/upload',location.href).href,{method:'POST',credentials:'include',body:fd});
+      const isArchive=_ARCHIVE_EXTS.test(f.name);
+      const url=new URL(isArchive?'api/upload/extract':'api/upload',document.baseURI||location.href).href;
+      const res=await fetch(url,{method:'POST',credentials:'include',body:fd});
       if(_redirectIfUnauth(res)) return;
       if(!res.ok){const err=await res.text();throw new Error(err);}
       const data=await res.json();
       if(data.error)throw new Error(data.error);
-      names.push({name: data.filename, path: data.path});
+      if(isArchive){
+        names.push({name: data.dest, path: data.dest, extracted: data.extracted});
+        if(typeof loadDir==='function')loadDir(S.currentDir||'.');
+      }else{
+        names.push({name: data.filename, path: data.path, mime: data.mime, size: data.size, is_image: !!data.is_image});
+      }
     }catch(e){failures++;setStatus(`\u274c ${t('upload_failed')}${f.name} \u2014 ${e.message}`);}
     bar.style.width=`${Math.round((i+1)/total*100)}%`;
   }
   barWrap.classList.remove('active');bar.style.width='0%';
   S.pendingFiles=[];renderTray();
   if(failures===total&&total>0)throw new Error(t('all_uploads_failed',total));
+  // Show extraction summary
+  const extracted=names.filter(n=>n.extracted);
+  if(extracted.length)showToast(t('archive_extracted',extracted.reduce((s,n)=>s+n.extracted,0),extracted.length));
   return names;
 }

@@ -399,7 +399,8 @@ def test_unknown_providers_do_not_inherit_default_model(monkeypatch):
     with the global default_model placeholder.
 
     Regression guard for the bug where unknown providers ended up showing
-    gpt-5.4-mini even though those providers do not serve it.
+    gpt-5.4-mini even though those providers do not serve it. Minimax-Cn is
+    now known and should show its own catalog instead.
     """
     import sys, types
 
@@ -425,12 +426,12 @@ def test_unknown_providers_do_not_inherit_default_model(monkeypatch):
     assert 'Acme-Ai' not in groups, (
         f"Unknown providers should not inherit the default model placeholder: {groups}"
     )
-    assert 'Minimax-Cn' not in groups, (
-        f"Minimax-Cn should not inherit the default model placeholder: {groups}"
+    assert 'MiniMax (China)' in groups, (
+        f"Minimax-Cn should render its own static catalog: {groups}"
     )
     assert not any(
         norm(mid) == 'gpt-5.4-mini'
-        for mid in groups.get('Alibaba', []) + groups.get('Minimax-Cn', [])
+        for mid in groups.get('Alibaba', []) + groups.get('MiniMax (China)', [])
     ), (
         f"Unknown provider groups still inherited the default model: {groups}"
     )
@@ -491,7 +492,8 @@ def test_custom_endpoint_uses_model_config_api_key_for_model_discovery(monkeypat
     assert captured['ua'] == 'OpenAI/Python 1.0'
     groups = {g['provider']: [m['id'] for m in g['models']] for g in result['groups']}
     assert 'Custom' in groups
-    assert 'gpt-5.2' in groups['Custom']
+    # Model ID may be prefixed with @provider: due to cross-provider dedup (#1228)
+    assert any('gpt-5.2' in m for m in groups['Custom']), f'gpt-5.2 not found in Custom: {groups}'
 
 
 # -- Issue #230: custom provider with slash model name -----------------------

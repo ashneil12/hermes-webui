@@ -12,10 +12,10 @@ import api.config as _cfg
 from api.config import (
     SESSION_DIR, SESSION_INDEX_FILE, SESSIONS, SESSIONS_MAX,
     LOCK, STREAMS, STREAMS_LOCK, DEFAULT_WORKSPACE, DEFAULT_MODEL, PROJECTS_FILE, HOME,
-    get_effective_default_model,
+    get_effective_default_model, _get_session_agent_lock,
 )
 from api.workspace import get_last_workspace
-from api.agent_sessions import read_importable_agent_session_rows
+from api.agent_sessions import read_importable_agent_session_rows, read_session_lineage_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -346,6 +346,7 @@ def _lookup_index_message_count(session_id):
 class Session:
     def __init__(self, session_id: str=None, title: str='Untitled',
                  workspace=str(DEFAULT_WORKSPACE), model=DEFAULT_MODEL,
+                 model_provider=None,
                  messages=None, created_at=None, updated_at=None,
                  tool_calls=None, pinned: bool=False, archived: bool=False,
                  project_id: str=None, profile=None,
@@ -355,13 +356,19 @@ class Session:
                  pending_user_message: str=None,
                  pending_attachments=None,
                  pending_started_at=None,
+                 context_messages=None,
                  compression_anchor_visible_idx=None,
                  compression_anchor_message_key=None,
-                 **kwargs):
+                 context_length=None, threshold_tokens=None,
+                 last_prompt_tokens=None,
+                parent_session_id: str=None,
+                enabled_toolsets=None,
+                **kwargs):
         self.session_id = session_id or uuid.uuid4().hex[:12]
         self.title = title
         self.workspace = str(Path(workspace).expanduser().resolve())
         self.model = model
+        self.model_provider = str(model_provider).strip().lower() if model_provider else None
         self.messages = messages or []
         self.tool_calls = tool_calls or []
         self.created_at = created_at or time.time()
@@ -378,8 +385,18 @@ class Session:
         self.pending_user_message = pending_user_message
         self.pending_attachments = pending_attachments or []
         self.pending_started_at = pending_started_at
+        self.context_messages = context_messages if isinstance(context_messages, list) else []
         self.compression_anchor_visible_idx = compression_anchor_visible_idx
         self.compression_anchor_message_key = compression_anchor_message_key
+        self.context_length = context_length
+        self.threshold_tokens = threshold_tokens
+        self.last_prompt_tokens = last_prompt_tokens
+        self.parent_session_id = parent_session_id
+        self.is_cli_session = bool(kwargs.get('is_cli_session', False))
+        self.source_tag = kwargs.get('source_tag')
+        self.session_source = kwargs.get('session_source')
+        self.source_label = kwargs.get('source_label')
+        self.enabled_toolsets = enabled_toolsets  # List[str] or None — per-session toolset override
         self._metadata_message_count = None
 
     @property
@@ -393,12 +410,16 @@ class Session:
         # without parsing the full messages array (which may be 400KB+).
         # Fields are listed in the order they should appear in the JSON file.
         METADATA_FIELDS = [
-            'session_id', 'title', 'workspace', 'model', 'created_at', 'updated_at',
+            'session_id', 'title', 'workspace', 'model', 'model_provider', 'created_at', 'updated_at',
             'pinned', 'archived', 'project_id', 'profile',
             'input_tokens', 'output_tokens', 'estimated_cost',
             'personality', 'active_stream_id',
             'pending_user_message', 'pending_attachments', 'pending_started_at',
             'compression_anchor_visible_idx', 'compression_anchor_message_key',
+            'context_length', 'threshold_tokens', 'last_prompt_tokens',
+            'parent_session_id',
+            'is_cli_session', 'source_tag', 'session_source', 'source_label',
+            'enabled_toolsets',
         ]
         meta = {k: getattr(self, k, None) for k in METADATA_FIELDS}
         meta['messages'] = self.messages
@@ -472,6 +493,7 @@ class Session:
             'title': self.title,
             'workspace': self.workspace,
             'model': self.model,
+            'model_provider': self.model_provider,
             'message_count': (
                 self._metadata_message_count
                 if self._metadata_message_count is not None
@@ -490,11 +512,199 @@ class Session:
             'personality': self.personality,
             'compression_anchor_visible_idx': self.compression_anchor_visible_idx,
             'compression_anchor_message_key': self.compression_anchor_message_key,
+            'context_length': self.context_length,
+            'threshold_tokens': self.threshold_tokens,
+            'last_prompt_tokens': self.last_prompt_tokens,
+            # Only emit 'parent_session_id' when set (the /branch fork link, #1342).
+            # Sessions without a fork must not leak None — see test_session_lineage_metadata_api.
+            **({'parent_session_id': self.parent_session_id} if self.parent_session_id else {}),
             'active_stream_id': self.active_stream_id,
+            'is_cli_session': self.is_cli_session,
+            'source_tag': self.source_tag,
+            'session_source': self.session_source,
+            'source_label': self.source_label,
+            'enabled_toolsets': self.enabled_toolsets,
             'is_streaming': _is_streaming_session(
                 self.active_stream_id, active_stream_ids
             ) if include_runtime else False,
         }
+
+def _get_profile_home(profile) -> Path:
+    """Resolve the hermes agent home directory for the given profile.
+
+    Prefers the profile-specific helper from api.profiles; falls back to the
+    HERMES_HOME environment variable or ~/.hermes, expanding ~ correctly.
+    """
+    try:
+        from api.profiles import get_hermes_home_for_profile
+        return Path(get_hermes_home_for_profile(profile))
+    except ImportError:
+        return Path(os.environ.get('HERMES_HOME') or '~/.hermes').expanduser()
+
+
+def _apply_core_sync_or_error_marker(
+    session,
+    core_path,
+    stream_id_for_recheck=None,
+    *,
+    require_stream_dead=True,
+) -> bool:
+    """Inner repair logic. Must be called with the per-session lock already held.
+
+    Re-checks session state under the lock, then either syncs messages from the
+    core transcript (if present and non-empty) or restores the pending user
+    message as a recovered user turn and appends an error marker.
+
+    stream_id_for_recheck: when provided, repair bails if session.active_stream_id
+    changed (e.g. context compression rotated it).  The cache-miss repair path
+    also requires the stream to be absent from active streams; the streaming
+    thread's final fallback passes require_stream_dead=False because it runs
+    before its own stream is removed from STREAMS.
+
+    Returns True if repair was applied, False if the re-check bailed out.
+    Must never raise — caller is responsible for exception handling.
+    """
+    sid = session.session_id
+    # Bail if pending is unset — nothing to repair.
+    if not session.pending_user_message:
+        return False
+    if stream_id_for_recheck is not None:
+        # Bail if active_stream_id rotated between the pre-lock check and now.
+        # Cache-miss repair must also skip if the stream is alive again, but the
+        # streaming thread's final fallback runs before removing its own stream
+        # from STREAMS and must be allowed to repair that same active stream.
+        if session.active_stream_id != stream_id_for_recheck:
+            return False
+        if require_stream_dead and session.active_stream_id in _active_stream_ids():
+            return False
+
+    # When messages is already non-empty the core-sync overwrite and recovered
+    # user turn are skipped (we cannot clobber in-memory mutations), but the
+    # stuck pending fields MUST still be cleared and an error marker appended
+    # so the session isn't permanently left in stale-pending state.
+    if len(session.messages) != 0:
+        session.active_stream_id = None
+        session.pending_user_message = None
+        session.pending_attachments = []
+        session.pending_started_at = None
+        session.messages.append({
+            'role': 'assistant',
+            'content': '**Previous turn did not complete.**',
+            'timestamp': int(time.time()),
+            '_error': True,
+        })
+        session.save()
+        logger.info(
+            "Session %s: pending cleared (messages non-empty), added error marker",
+            sid,
+        )
+        return True
+
+    # ── messages *is* empty ─ full repair ─────────────────────────────────
+
+    if core_path.exists():
+        with open(core_path, encoding='utf-8') as f:
+            core = json.load(f)
+        core_messages = core.get('messages', [])
+        if core_messages:
+            session.messages = core_messages
+            session.tool_calls = core.get('tool_calls', [])
+            for field in ('input_tokens', 'output_tokens', 'estimated_cost'):
+                if core.get(field) is not None:
+                    setattr(session, field, core[field])
+            session.active_stream_id = None
+            session.pending_user_message = None
+            session.pending_attachments = []
+            session.pending_started_at = None
+            session.save()
+            logger.info(
+                "Session %s: synced %d messages from core transcript",
+                sid, len(core_messages),
+            )
+            return True
+
+    # Core missing or empty — restore the pending user message as a recovered
+    # user turn (preserving the draft), then append an error marker.
+    if session.pending_user_message:
+        # Use the original send time if available so the recovered turn
+        # appears in the correct chronological position.
+        _recovered_ts = int(time.time())
+        if isinstance(session.pending_started_at, (int, float)) and session.pending_started_at > 0:
+            _recovered_ts = int(session.pending_started_at)
+        recovered: dict = {
+            'role': 'user',
+            'content': session.pending_user_message,
+            'timestamp': _recovered_ts,
+            '_recovered': True,
+        }
+        if session.pending_attachments:
+            recovered['attachments'] = list(session.pending_attachments)
+        session.messages.append(recovered)
+    session.active_stream_id = None
+    session.pending_user_message = None
+    session.pending_attachments = []
+    session.pending_started_at = None
+    session.messages.append({
+        'role': 'assistant',
+        'content': '**Previous turn did not complete.**',
+        'timestamp': int(time.time()),
+        '_error': True,
+    })
+    session.save()
+    logger.info("Session %s: no core transcript found, added error marker", sid)
+    return True
+
+
+def _repair_stale_pending(session) -> bool:
+    """Recover a sidecar stuck with messages=[] and stale pending state.
+
+    Fires only when messages is empty, pending_user_message is set,
+    active_stream_id is set, and the stream is no longer alive.
+
+    Uses a non-blocking lock acquire so a caller that already holds the
+    per-session lock (e.g. retry_last, undo_last, cancel_stream) cannot
+    deadlock when get_session() triggers this on a cache miss.
+
+    Returns True if repair was applied, False otherwise.
+    Must never raise — all errors are caught and logged.
+    """
+    # Capture the stream id seen at pre-check time; the under-lock re-check in
+    # _apply_core_sync_or_error_marker uses this to detect a rotated active_stream_id
+    # (e.g. context compression) or a stream that came back alive.
+    _seen_stream_id = session.active_stream_id
+    if (len(session.messages) != 0
+            or not session.pending_user_message
+            or not _seen_stream_id
+            or _seen_stream_id in _active_stream_ids()):
+        return False
+
+    sid = session.session_id
+    if not sid or not all(c in '0123456789abcdefghijklmnopqrstuvwxyz_' for c in sid):
+        return False
+
+    try:
+        profile_home = _get_profile_home(session.profile)
+        core_path = profile_home / 'sessions' / f'session_{sid}.json'
+
+        lock = _get_session_agent_lock(sid)
+        # Non-blocking acquire: bail immediately if the caller already holds this
+        # lock (e.g. retry_last, undo_last, cancel_stream). Blocking would deadlock
+        # because _get_session_agent_lock returns a non-reentrant threading.Lock.
+        if not lock.acquire(blocking=False):
+            logger.debug(
+                "_repair_stale_pending: lock contended, skipping repair for session %s", sid,
+            )
+            return False
+        try:
+            return _apply_core_sync_or_error_marker(
+                session, core_path, stream_id_for_recheck=_seen_stream_id,
+            )
+        finally:
+            lock.release()
+    except Exception:
+        logger.exception("_repair_stale_pending failed for session %s", sid)
+        return False
+
 
 def get_session(sid, metadata_only=False):
     """Load a session, optionally with metadata only (skipping the messages array).
@@ -520,10 +730,26 @@ def get_session(sid, metadata_only=False):
             SESSIONS.move_to_end(sid)
             while len(SESSIONS) > SESSIONS_MAX:
                 SESSIONS.popitem(last=False)  # evict least recently used
+        if not metadata_only:
+            try:
+                repaired = _repair_stale_pending(s)
+                # If repair had to bail because the per-session lock was held,
+                # do not pin the still-stale sidecar in the LRU cache forever.
+                # Leaving it cached would prevent future get_session() calls from
+                # re-entering the cache-miss repair path after the lock holder exits.
+                if not repaired and (len(s.messages) == 0
+                        and s.pending_user_message
+                        and s.active_stream_id
+                        and s.active_stream_id not in _active_stream_ids()):
+                    with LOCK:
+                        if SESSIONS.get(sid) is s:
+                            SESSIONS.pop(sid, None)
+            except Exception:
+                pass  # repair is best-effort
         return s
     raise KeyError(sid)
 
-def new_session(workspace=None, model=None, profile=None):
+def new_session(workspace=None, model=None, profile=None, model_provider=None):
     """Create a new in-memory session.
 
     The session lives in the SESSIONS dict only — no disk write happens until
@@ -557,6 +783,7 @@ def new_session(workspace=None, model=None, profile=None):
     s = Session(
         workspace=workspace or get_last_workspace(),
         model=effective_model,
+        model_provider=model_provider,
         profile=profile,
     )
     with LOCK:
@@ -571,6 +798,31 @@ def _hide_from_default_sidebar(session: dict) -> bool:
     sid = str(session.get('session_id') or '')
     source = session.get('source_tag') or session.get('source')
     return source == 'cron' or sid.startswith('cron_')
+
+
+def _active_state_db_path() -> Path:
+    """Return state.db for the active Hermes profile, degrading to HERMES_HOME."""
+    try:
+        from api.profiles import get_active_hermes_home
+        hermes_home = Path(get_active_hermes_home()).expanduser().resolve()
+    except Exception:
+        hermes_home = Path(os.getenv('HERMES_HOME', str(HOME / '.hermes'))).expanduser().resolve()
+    return hermes_home / 'state.db'
+
+
+def _enrich_sidebar_lineage_metadata(sessions: list[dict]) -> None:
+    """Attach state.db compression lineage metadata used by sidebar collapse."""
+    try:
+        metadata = read_session_lineage_metadata(
+            _active_state_db_path(),
+            {s.get('session_id') for s in sessions},
+        )
+    except Exception:
+        return
+    for session in sessions:
+        sid = session.get('session_id')
+        if sid in metadata:
+            session.update(metadata[sid])
 
 
 def all_sessions():
@@ -614,9 +866,16 @@ def all_sessions():
             # No grace window: a 0-message Untitled session is never shown in the list
             # regardless of age. This means page refreshes and accidental New Conversation
             # clicks never leave orphan entries in the sidebar.
+            #
+            # Exception: sessions with active_stream_id set are actively streaming (#1327).
+            # #1184 deferred the first save() until the first message, so during the
+            # initial streaming turn the session still looks like Untitled+0-messages.
+            # Without this exemption, navigating away during a long first turn causes
+            # the session to vanish from the sidebar.
             result = [s for s in result if not (
                 s.get('title', 'Untitled') == 'Untitled'
                 and s.get('message_count', 0) == 0
+                and not s.get('active_stream_id')
             )]
             result = [s for s in result if not _hide_from_default_sidebar(s)]
             # Backfill: sessions created before Sprint 22 have no profile tag.
@@ -624,6 +883,7 @@ def all_sessions():
             for s in result:
                 if not s.get('profile'):
                     s['profile'] = 'default'
+            _enrich_sidebar_lineage_metadata(result)
             return result
         except Exception:
             logger.debug("Failed to load session index, falling back to full scan")
@@ -641,15 +901,18 @@ def all_sessions():
     out.sort(key=lambda s: (getattr(s, 'pinned', False), _session_sort_timestamp(s)), reverse=True)
     # Hide empty Untitled sessions from the UI entirely — kept consistent with the
     # index-path filter above. No grace window: a 0-message Untitled session is
-    # never shown regardless of age (#1171).
+    # never shown regardless of age (#1171).  Same streaming exemption as above (#1327).
     result = [s.compact(include_runtime=True, active_stream_ids=active_stream_ids) for s in out if not (
         s.title == 'Untitled'
         and len(s.messages) == 0
+        and not s.active_stream_id
+        and not s.pending_user_message
     )]
     result = [s for s in result if not _hide_from_default_sidebar(s)]
     for s in result:
         if not s.get('profile'):
             s['profile'] = 'default'
+    _enrich_sidebar_lineage_metadata(result)
     return result
 
 
@@ -680,6 +943,40 @@ def load_projects() -> list:
 def save_projects(projects) -> None:
     """Write project list to disk."""
     PROJECTS_FILE.write_text(json.dumps(projects, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+CRON_PROJECT_NAME = 'Cron Jobs'
+_CRON_PROJECT_LOCK = threading.Lock()
+
+
+def ensure_cron_project() -> str:
+    """Return the project_id of the system "Cron Jobs" project, creating it if needed.
+
+    Thread-safe and idempotent.  Returns a 12-char hex project_id string.
+    """
+    with _CRON_PROJECT_LOCK:
+        for p in load_projects():
+            if p.get('name') == CRON_PROJECT_NAME:
+                return p['project_id']
+        project_id = uuid.uuid4().hex[:12]
+        projects = load_projects()
+        projects.append({
+            'project_id': project_id,
+            'name': CRON_PROJECT_NAME,
+            'color': '#6366f1',
+            'created_at': time.time(),
+        })
+        save_projects(projects)
+        return project_id
+
+
+def is_cron_session(session_id: str, source_tag: str = None) -> bool:
+    """Return True if a session originates from a cron job."""
+    if source_tag == 'cron':
+        return True
+    sid = str(session_id or '')
+    return sid.startswith('cron_')
+
 
 
 def import_cli_session(
@@ -746,6 +1043,15 @@ def get_cli_sessions() -> list:
     except ImportError:
         _cli_profile = None  # older agent -- fall back to no profile
 
+    # Memoize the cron project ID for this scan so we don't pay a lock-acquire +
+    # disk-read of projects.json per cron session in the loop below.
+    # Resolved lazily on the first cron session we encounter.
+    _cron_pid_cache = [None]  # list-as-cell so the closure can mutate
+    def _cron_pid():
+        if _cron_pid_cache[0] is None:
+            _cron_pid_cache[0] = ensure_cron_project()
+        return _cron_pid_cache[0]
+
     try:
         for row in read_importable_agent_session_rows(db_path, limit=200, log=logger, exclude_sources=None):
             sid = row['id']
@@ -784,9 +1090,16 @@ def get_cli_sessions() -> list:
                 'updated_at': raw_ts,
                 'pinned': False,
                 'archived': False,
-                'project_id': None,
+                'project_id': _cron_pid() if is_cron_session(sid, _source) else None,
                 'profile': profile,
                 'source_tag': _source,
+                'raw_source': row.get('raw_source'),
+                'session_source': row.get('session_source'),
+                'source_label': row.get('source_label'),
+                'parent_session_id': row.get('parent_session_id'),
+                '_lineage_root_id': row.get('_lineage_root_id'),
+                '_lineage_tip_id': row.get('_lineage_tip_id'),
+                '_compression_segment_count': row.get('_compression_segment_count'),
                 'is_cli_session': True,
             })
     except Exception as _cli_err:

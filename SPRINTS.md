@@ -1,6 +1,6 @@
 # Hermes Web UI -- Forward Sprint Plan
 
-> Current state: v0.50.156 | 1903 tests | Full daily driver — CLI parity achieved
+> Current state: v0.50.245 | 3309 tests | Full daily driver — CLI parity achieved
 >
 > NOTE: This file is preserved as a historical planning record. Current sprint state
 > and version history live in CHANGELOG.md and ROADMAP.md.
@@ -12,34 +12,18 @@
 >           tool cards, workspace preview, onboarding, settings panel all done.
 >           Remaining: full subagent transparency UI, file diff viewer.
 >
-> Last meaningful update: v0.50.21 (April 13, 2026). See CHANGELOG.md for full history.
+> Last meaningful update: v0.50.245 (April 30, 2026). See CHANGELOG.md for full history.
 
 ---
 
-## Where we are now (v0.50.21 — updated April 2026)
+## Where we are now (v0.50.245 — updated April 2026)
 
-> The sections below describe the state as of v0.36 for historical reference.
-> See ROADMAP.md for the current sprint history table (v0.36 → v0.50.21).
+> The sections below describe the original sprint plans (Sprints 11–17) for historical reference.
+> See ROADMAP.md for the full sprint history table (v0.36 → v0.50.245) and CHANGELOG.md for per-version release notes.
 
-**CLI parity: ✅ Complete** as of v0.50.x. Core agent loop, all tools visible, workspace
-file ops with tree view and git detection, cron/skills/memory CRUD, session
-management, streaming with rAF throttle, cancel, multi-provider models, custom
-endpoint discovery, slash commands (help/clear/model/workspace/new/usage/theme/compact),
-thinking/reasoning display, password auth, multi-profile support with seamless
-switching, CLI session bridge (read and import from state.db), context
-auto-compaction handling, self-update checker. Remaining gaps: subagent
-session tree, toolset control per session, code execution cells.
+**CLI parity: ✅ Complete** as of the v0.50.x line. Core agent loop, all tools visible, workspace file ops with tree view and git detection, cron/skills/memory CRUD, session management, streaming with rAF throttle, cancel, multi-provider models, custom endpoint discovery, slash commands (help/clear/model/workspace/new/usage/theme/compact/queue/interrupt/steer/btw/reasoning), thinking/reasoning display, password auth, multi-profile support with seamless switching, CLI session bridge (read and import from state.db), context auto-compaction handling, self-update checker, embedded workspace terminal, archive upload (zip/tar), workspace directory CRUD.
 
-**Claude parity: ~85% complete.** Chat, streaming, file browser, session
-management with projects and tags, tool cards with subagent delegation,
-syntax highlighting, model switching, Mermaid diagrams, mobile responsive
-layout (hamburger sidebar, bottom nav, files slide-over), breadcrumb
-workspace nav with tree view, slash commands, thinking/reasoning display,
-auth with signed cookies, 6 pluggable UI themes (dark/light/slate/solarized/
-monokai/nord), voice input (Web Speech API), collapsible date groups,
-context usage indicator, token/cost display, git branch badge, Docker
-support. Remaining gaps: artifacts (HTML/SVG preview), TTS playback,
-sharing/public URLs, code execution inline.
+**Claude parity: ~95% complete.** Chat, streaming with incremental markdown (vendored streaming-markdown@0.2.15), file browser with diff/JSON/YAML/CSV/Excalidraw inline rendering, PDF/SVG/audio/video preview, session management with projects/tags, tool cards with subagent delegation, syntax highlighting, model switching with provider-aware default rehydration, Mermaid diagrams, full mobile responsive layout (container queries on composer, slide-over workspace), breadcrumb workspace nav with tree view, slash commands, thinking/reasoning display, auth with signed cookies, 8 pluggable UI themes (dark/light/system/slate/solarized/monokai/nord/Sienna/OLED), voice input (Web Speech API) and TTS playback, collapsible date groups, context ring usage indicator, token/cost display, git branch badge, Docker support with HEALTHCHECK, batch session select mode, configurable model badges, MCP server management UI, cron run-status tracking with watch mode, PWA manifest. Remaining gaps: artifacts sharing/public URLs, code execution inline cells.
 
 ---
 

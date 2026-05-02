@@ -119,6 +119,11 @@ function _beginSettingsPanelSession() {
   _settingsSkinOnOpen = localStorage.getItem('hermes-skin') || 'default';
   _settingsFontSizeOnOpen = localStorage.getItem('hermes-font-size') || 'default';
   _pendingSettingsTargetPanel = null;
+  if (_settingsAppearanceAutosaveTimer) {
+    clearTimeout(_settingsAppearanceAutosaveTimer);
+    _settingsAppearanceAutosaveTimer = null;
+  }
+  _settingsAppearanceAutosaveRetryPayload = null;
   _resetSettingsPanelState();
 }
 
@@ -155,11 +160,11 @@ async function switchPanel(name, opts = {}) {
   document.querySelectorAll('.panel-view').forEach(p => p.classList.remove('active'));
   const panelEl = $('panel' + nextPanel.charAt(0).toUpperCase() + nextPanel.slice(1));
   if (panelEl) panelEl.classList.add('active');
-  // Toggle main content view. Each entry in MAIN_VIEW_PANELS gets a matching
+  // Update main content view. Each entry in MAIN_VIEW_PANELS gets a matching
   // showing-<name> class on <main>; no class means chat (the default).
   const mainEl = document.querySelector('main.main');
   if (mainEl) {
-    ['settings','skills','memory','tasks','workspaces','profiles'].forEach(p => {
+    ['settings','skills','memory','tasks','workspaces','profiles','insights'].forEach(p => {
       mainEl.classList.toggle('showing-' + p, nextPanel === p);
     });
   }
@@ -170,6 +175,7 @@ async function switchPanel(name, opts = {}) {
   if (nextPanel === 'workspaces') await loadWorkspacesPanel();
   if (nextPanel === 'profiles') await loadProfilesPanel();
   if (nextPanel === 'todos') loadTodos();
+  if (nextPanel === 'insights') await loadInsights();
   if (nextPanel === 'settings') {
     switchSettingsSection(_currentSettingsSection);
     loadSettingsPanel();
@@ -371,6 +377,7 @@ function _setCronHeaderButtons(mode, job) {
   const pauseBtn = $('btnPauseTaskDetail');
   const resumeBtn = $('btnResumeTaskDetail');
   const editBtn = $('btnEditTaskDetail');
+  const dupBtn = $('btnDuplicateTaskDetail');
   const delBtn = $('btnDeleteTaskDetail');
   const cancelBtn = $('btnCancelTaskDetail');
   const saveBtn = $('btnSaveTaskDetail');
@@ -385,36 +392,77 @@ function _setCronHeaderButtons(mode, job) {
     );
     if (resumable) { hide(pauseBtn); show(resumeBtn); }
     else { show(pauseBtn); hide(resumeBtn); }
-    show(editBtn); show(delBtn); hide(cancelBtn); hide(saveBtn);
+    show(editBtn); show(dupBtn); show(delBtn); hide(cancelBtn); hide(saveBtn);
   } else if (mode === 'create' || mode === 'edit') {
-    hide(runBtn); hide(pauseBtn); hide(resumeBtn); hide(editBtn); hide(delBtn);
+    hide(runBtn); hide(pauseBtn); hide(resumeBtn); hide(editBtn); hide(dupBtn); hide(delBtn);
     show(cancelBtn); show(saveBtn);
   } else {
-    [runBtn,pauseBtn,resumeBtn,editBtn,delBtn,cancelBtn,saveBtn].forEach(hide);
+    [runBtn,pauseBtn,resumeBtn,editBtn,dupBtn,delBtn,cancelBtn,saveBtn].forEach(hide);
   }
 }
 
 async function _loadCronDetailRuns(jobId){
   try {
-    const data = await api(`/api/crons/output?job_id=${encodeURIComponent(jobId)}&limit=20`);
+    const data = await api(`/api/crons/history?job_id=${encodeURIComponent(jobId)}&limit=50`);
     if (!_currentCronDetail || _currentCronDetail.id !== jobId) return;
     const card = $('cronDetailRuns');
     if (!card) return;
-    if (!data.outputs || !data.outputs.length) {
+    if (!data.runs || !data.runs.length) {
       card.innerHTML = `<div class="detail-card-title">${esc(t('cron_last_output'))}</div><div style="color:var(--muted);font-size:12px">${esc(t('cron_no_runs_yet'))}</div>`;
       return;
     }
-    const rows = data.outputs.map((out, i) => {
-      const ts = out.filename.replace('.md','').replace(/_/g,' ');
-      const snippet = _cronOutputSnippet(out.content);
+    const rows = data.runs.map((run, i) => {
+      const ts = run.filename.replace('.md','').replace(/_/g,' ');
+      const sizeStr = run.size > 1024 ? (run.size/1024).toFixed(1)+' KB' : run.size+' B';
+      const dateStr = new Date(run.modified * 1000).toLocaleString();
       const rid = `cron-det-run-${jobId}-${i}`;
       return `<div class="detail-run-item" id="${rid}">
-        <div class="detail-run-head" onclick="document.getElementById('${rid}').classList.toggle('open')"><span>${esc(ts)}</span><span style="opacity:.6">▸</span></div>
-        <div class="detail-run-body">${esc(snippet)}</div>
+        <div class="detail-run-head" onclick="_loadRunContent('${esc(jobId)}','${esc(run.filename)}','${rid}')">
+          <span><span style="opacity:.7">${esc(ts)}</span> <span style="opacity:.4;font-size:11px">${esc(sizeStr)}</span></span>
+          <span style="opacity:.6">▸</span>
+        </div>
+        <div class="detail-run-body" style="color:var(--muted);font-size:12px">${esc(t('loading'))}</div>
       </div>`;
     }).join('');
-    card.innerHTML = `<div class="detail-card-title">${esc(t('cron_last_output'))}</div>${rows}`;
+    const countLabel = data.total > 50 ? ` (${data.total} runs, showing latest 50)` : ` (${data.total} runs)`;
+    card.innerHTML = `<div class="detail-card-title">${esc(t('cron_last_output'))}${countLabel}</div>${rows}`;
   } catch(e) { /* ignore */ }
+}
+
+async function _loadRunContent(jobId, filename, runId){
+  const body = document.querySelector(`#${runId} .detail-run-body`);
+  if (!body) return;
+  const item = document.getElementById(runId);
+  if (!item.classList.contains('open')) {
+    item.classList.add('open');
+  }
+  body.innerHTML = `<span style="opacity:.5">${esc(t('loading'))}</span>`;
+  try {
+    const data = await api(`/api/crons/run?job_id=${encodeURIComponent(jobId)}&filename=${encodeURIComponent(filename)}`);
+    if (data.error) {
+      body.textContent = data.error;
+      return;
+    }
+    // Render markdown content using the same renderer as chat messages
+    if (typeof renderMd === 'function') {
+      body.innerHTML = renderMd(data.snippet || data.content);
+    } else {
+      body.textContent = data.snippet || data.content;
+    }
+    // Show "View full output" button if content was truncated
+    if (data.content && data.snippet && data.content.length > data.snippet.length) {
+      const btn = document.createElement('button');
+      btn.style.cssText = 'margin-top:8px;padding:4px 12px;border-radius:var(--radius-btn);border:1px solid var(--border-subtle);background:var(--surface-subtle);color:var(--text-secondary);cursor:pointer;font-size:12px';
+      btn.textContent = t('cron_view_full_output') || 'View full output';
+      btn.onclick = () => {
+        body.innerHTML = renderMd ? renderMd(data.content) : '';
+        btn.remove();
+      };
+      body.appendChild(btn);
+    }
+  } catch(e) {
+    body.textContent = 'Error: ' + e.message;
+  }
 }
 
 function openCronDetail(id, el){
@@ -429,12 +477,15 @@ function openCronDetail(id, el){
   if (dot) dot.remove();
   _cronPreFormDetail = null;
   _editingCronId = null;
+  _stopCronWatch();
   _renderCronDetail(job);
+  _checkCronWatchOnDetail(id);
 }
 
 function _clearCronDetail(){
   _currentCronDetail = null;
   _cronMode = 'empty';
+  _stopCronWatch();
   const title = $('taskDetailTitle');
   const body = $('taskDetailBody');
   const empty = $('taskDetailEmpty');
@@ -458,6 +509,39 @@ function editCurrentCron(){
   if (!_currentCronDetail) return;
   openCronEdit(_currentCronDetail);
 }
+function duplicateCurrentCron(){
+  if (!_currentCronDetail) return;
+  const job = _currentCronDetail;
+  if (typeof switchPanel === 'function' && _currentPanel !== 'tasks') switchPanel('tasks');
+  _cronPreFormDetail = { ...job };
+  _editingCronId = null;
+  _cronMode = 'create';
+  _cronIsDuplicate = true;
+  _cronSelectedSkills = Array.isArray(job.skills) ? [...job.skills] : [];
+  // Deduplicate name: append "(copy)", "(copy 2)", "(copy 3)" etc.
+  const baseName = job.name || '';
+  let dupName = baseName + ' (copy)';
+  if (_cronList && _cronList.length) {
+    const taken = new Set(_cronList.filter(j => j.name).map(j => j.name));
+    if (taken.has(dupName)) {
+      let n = 2;
+      while (taken.has(baseName + ' (copy ' + n + ')')) n++;
+      dupName = baseName + ' (copy ' + n + ')';
+    }
+  }
+  _renderCronForm({
+    name: dupName,
+    schedule: job.schedule_display || (job.schedule && job.schedule.expression) || '',
+    prompt: job.prompt || '',
+    deliver: job.deliver || 'local',
+    isEdit: false,
+  });
+  if (!_cronSkillsCache) {
+    api('/api/skills').then(d=>{_cronSkillsCache=d.skills||[]; _bindCronSkillPicker();}).catch(()=>{});
+  } else {
+    _bindCronSkillPicker();
+  }
+}
 async function deleteCurrentCron(){
   if (!_currentCronDetail) return;
   const id = _currentCronDetail.id;
@@ -472,6 +556,7 @@ async function deleteCurrentCron(){
 }
 
 let _cronSelectedSkills=[];
+let _cronIsDuplicate = false;
 let _cronSkillsCache=null;
 
 function openCronCreate(){
@@ -479,6 +564,7 @@ function openCronCreate(){
   _cronPreFormDetail = _currentCronDetail ? { ..._currentCronDetail } : null;
   _editingCronId = null;
   _cronMode = 'create';
+  _cronIsDuplicate = false;
   _cronSelectedSkills = [];
   _renderCronForm({ name:'', schedule:'', prompt:'', deliver:'local', isEdit:false });
   _cronSkillsCache = null;
@@ -644,10 +730,12 @@ async function saveCronForm(){
       return;
     }
     const body={schedule,prompt,deliver};
+    if(_cronIsDuplicate) body.enabled=false;
     if(name)body.name=name;
     if(_cronSelectedSkills.length)body.skills=_cronSelectedSkills;
     const res = await api('/api/crons/create',{method:'POST',body:JSON.stringify(body)});
     _cronPreFormDetail = null;
+    _cronIsDuplicate = false;
     showToast(t('cron_job_created'));
     await loadCrons();
     const newId = res && (res.id || (res.job && res.job.id));
@@ -670,11 +758,83 @@ function _cronOutputSnippet(content) {
   return body.slice(0, 600) || '(empty)';
 }
 
+// ── Cron run watch ────────────────────────────────────────────────────────────
+let _cronWatchInterval = null;
+let _cronWatchStart = null;
+let _cronWatchTimerInterval = null;
+
+function _startCronWatch(jobId) {
+  _stopCronWatch();
+  _cronWatchStart = Date.now();
+  _cronWatchInterval = setInterval(async () => {
+    try {
+      const data = await api(`/api/crons/status?job_id=${encodeURIComponent(jobId)}`);
+      if (!data.running) {
+        _stopCronWatch();
+        if (_currentCronDetail && _currentCronDetail.id === jobId) {
+          _loadCronDetailRuns(jobId);
+        }
+        return;
+      }
+      // Still running — update elapsed
+      if (_currentCronDetail && _currentCronDetail.id === jobId) {
+        const el = $('cronRunningIndicator');
+        if (el) el.querySelector('.cron-watch-elapsed').textContent = _formatElapsed(data.elapsed);
+      }
+    } catch(e) { /* ignore poll errors */ }
+  }, 3000);
+  // Timer update every second
+  _cronWatchTimerInterval = setInterval(() => {
+    if (_currentCronDetail && _cronWatchStart) {
+      const el = $('cronRunningIndicator');
+      if (el) el.querySelector('.cron-watch-elapsed').textContent = _formatElapsed((Date.now() - _cronWatchStart) / 1000);
+    }
+  }, 1000);
+  // Inject running indicator into detail card
+  if (_currentCronDetail && _currentCronDetail.id === jobId) {
+    _injectRunningIndicator();
+  }
+}
+
+function _stopCronWatch() {
+  if (_cronWatchInterval) { clearInterval(_cronWatchInterval); _cronWatchInterval = null; }
+  if (_cronWatchTimerInterval) { clearInterval(_cronWatchTimerInterval); _cronWatchTimerInterval = null; }
+  _cronWatchStart = null;
+  const el = $('cronRunningIndicator');
+  if (el) el.remove();
+}
+
+function _injectRunningIndicator() {
+  const card = $('cronDetailRuns');
+  if (!card || $('cronRunningIndicator')) return;
+  const div = document.createElement('div');
+  div.id = 'cronRunningIndicator';
+  div.className = 'cron-running-indicator';
+  div.innerHTML = `<span class="cron-watch-spinner"></span><span>${esc(t('cron_status_running'))}</span><span class="cron-watch-elapsed">0s</span>`;
+  card.insertAdjacentElement('beforebegin', div);
+}
+
+function _formatElapsed(seconds) {
+  if (seconds < 60) return Math.round(seconds) + 's';
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return m + 'm ' + s + 's';
+}
+
+function _checkCronWatchOnDetail(jobId) {
+  // When opening a detail view, check if job is running
+  api(`/api/crons/status?job_id=${encodeURIComponent(jobId)}`).then(data => {
+    if (data.running && _currentCronDetail && _currentCronDetail.id === jobId) {
+      _startCronWatch(jobId);
+    }
+  }).catch(() => {});
+}
+
 async function cronRun(id) {
   try {
     await api('/api/crons/run', {method:'POST', body: JSON.stringify({job_id: id})});
     showToast(t('cron_job_triggered'));
-    setTimeout(() => { if (_currentCronDetail && _currentCronDetail.id === id) _loadCronDetailRuns(id); }, 5000);
+    _startCronWatch(id);
   } catch(e) { showToast(t('failed_colon') + e.message, 4000); }
 }
 
@@ -730,6 +890,112 @@ function loadTodos() {
     </div>`).join('');
 }
 
+// ── Insights panel ──
+async function loadInsights(animate) {
+  const box = $('insightsContent');
+  const refreshBtn = $('insightsRefreshBtn');
+  if (!box) return;
+  if (animate && refreshBtn) {
+    refreshBtn.style.opacity = '0.5';
+    refreshBtn.disabled = true;
+  }
+  const period = ($('insightsPeriod') || {}).value || '30';
+  try {
+    const data = await api(`/api/insights?days=${period}`);
+    _renderInsights(data, box);
+  } catch(e) {
+    box.innerHTML = `<div style="color:var(--accent);font-size:12px">${esc(t('error_prefix') + e.message)}</div>`;
+  } finally {
+    if (animate && refreshBtn) {
+      refreshBtn.style.opacity = '';
+      refreshBtn.disabled = false;
+    }
+  }
+}
+
+function _renderInsights(d, box) {
+  const fmtNum = n => n.toLocaleString();
+  const fmtCost = c => c > 0 ? '$' + c.toFixed(4) : t('insights_no_cost');
+  const fmtTokens = n => n >= 1e6 ? (n/1e6).toFixed(1) + 'M' : n >= 1e3 ? (n/1e3).toFixed(1) + 'K' : fmtNum(n);
+
+  // Overview cards
+  const overviewCards = [
+    { label: t('insights_sessions'), value: fmtNum(d.total_sessions), icon: li('message-square', 18) },
+    { label: t('insights_messages'), value: fmtNum(d.total_messages), icon: li('hash', 18) },
+    { label: t('insights_tokens'), value: fmtTokens(d.total_tokens), icon: li('cpu', 18) },
+    { label: t('insights_cost'), value: fmtCost(d.total_cost), icon: li('dollar-sign', 18) },
+  ];
+
+  // Models table
+  let modelsHtml = '';
+  if (d.models && d.models.length) {
+    const totalSess = d.models.reduce((a, m) => a + m.sessions, 0) || 1;
+    modelsHtml = `<div class="insights-card"><div class="insights-card-title">${esc(t('insights_models'))}</div><div class="insights-table"><div class="insights-table-head"><span>Model</span><span>Sessions</span><span>Share</span></div>` +
+      d.models.map(m => {
+        const pct = ((m.sessions / totalSess) * 100).toFixed(0);
+        return `<div class="insights-table-row"><span class="insights-model-name" title="${esc(m.model)}">${esc(m.model)}</span><span>${m.sessions}</span><span>${pct}%</span></div>`;
+      }).join('') +
+      `</div></div>`;
+  }
+
+  // Activity by day of week
+  let dowHtml = '';
+  if (d.activity_by_day) {
+    const maxDow = Math.max(...d.activity_by_day.map(x => x.sessions), 1);
+    dowHtml = `<div class="insights-card"><div class="insights-card-title">${esc(t('insights_activity_by_day'))}</div><div class="insights-bars">` +
+      d.activity_by_day.map(r => {
+        const pct = (r.sessions / maxDow * 100).toFixed(0);
+        return `<div class="insights-bar-row"><span class="insights-bar-label">${r.day}</span><div class="insights-bar-track"><div class="insights-bar-fill" style="width:${pct}%"></div></div><span class="insights-bar-value">${r.sessions}</span></div>`;
+      }).join('') +
+      `</div></div>`;
+  }
+
+  // Activity by hour
+  let hodHtml = '';
+  if (d.activity_by_hour) {
+    const maxHod = Math.max(...d.activity_by_hour.map(x => x.sessions), 1);
+    const peakHour = d.activity_by_hour.reduce((a, b) => b.sessions > a.sessions ? b : a, {hour:0,sessions:0});
+    hodHtml = `<div class="insights-card"><div class="insights-card-title">${esc(t('insights_activity_by_hour'))} <span style="font-weight:400;font-size:11px;color:var(--muted)">${esc(t('insights_peak_hour').replace('{hour}', peakHour.hour + ':00'))}</span></div><div class="insights-bars">` +
+      d.activity_by_hour.map(r => {
+        const pct = (r.sessions / maxHod * 100).toFixed(0);
+        const isPeak = r.hour === peakHour.hour && peakHour.sessions > 0;
+        return `<div class="insights-bar-row"><span class="insights-bar-label">${String(r.hour).padStart(2,'0')}</span><div class="insights-bar-track"><div class="insights-bar-fill${isPeak ? ' insights-bar-peak' : ''}" style="width:${pct}%"></div></div><span class="insights-bar-value">${r.sessions}</span></div>`;
+      }).join('') +
+      `</div></div>`;
+  }
+
+  // Token breakdown
+  const tokenCards = `
+    <div class="insights-card">
+      <div class="insights-card-title">${esc(t('insights_token_breakdown'))}</div>
+      <div class="insights-token-row">
+        <span class="insights-token-label">${esc(t('insights_input_tokens'))}</span>
+        <span class="insights-token-value">${fmtTokens(d.total_input_tokens)}</span>
+      </div>
+      <div class="insights-token-row">
+        <span class="insights-token-label">${esc(t('insights_output_tokens'))}</span>
+        <span class="insights-token-value">${fmtTokens(d.total_output_tokens)}</span>
+      </div>
+      <div class="insights-token-row insights-token-total">
+        <span class="insights-token-label">${esc(t('insights_total'))}</span>
+        <span class="insights-token-value">${fmtTokens(d.total_tokens)}</span>
+      </div>
+    </div>`;
+
+  box.innerHTML = `
+    <div class="insights-grid">
+      ${overviewCards.map(c => `<div class="insights-stat"><div class="insights-stat-icon">${c.icon}</div><div class="insights-stat-info"><div class="insights-stat-value">${c.value}</div><div class="insights-stat-label">${esc(c.label)}</div></div></div>`).join('')}
+    </div>
+    <div class="insights-row">
+      ${tokenCards}
+      ${modelsHtml}
+    </div>
+    ${dowHtml}
+    ${hodHtml}
+    <div style="text-align:center;color:var(--muted);font-size:10px;margin-top:12px;opacity:.6">${esc(t('insights_footer').replace('{days}', d.period_days))}</div>
+  `;
+}
+
 async function clearConversation() {
   if(!S.session) return;
   const _clrMsg=await showConfirmDialog({title:t('clear_conversation_title'),message:t('clear_conversation_message'),confirmLabel:t('clear'),danger:true,focusCancel:true});
@@ -753,8 +1019,29 @@ async function loadSkills() {
   try {
     const data = await api('/api/skills');
     _skillsData = data.skills || [];
+    // Prune collapsed state to only keep categories present in fresh data,
+    // avoiding stale keys when categories are renamed or removed server-side.
+    const liveCats = new Set(_skillsData.map(s => s.category || '(general)'));
+    for (const c of _collapsedCats) { if (!liveCats.has(c)) _collapsedCats.delete(c); }
     renderSkills(_skillsData);
   } catch(e) { box.innerHTML = `<div style="padding:12px;color:var(--accent);font-size:12px">Error: ${esc(e.message)}</div>`; }
+}
+
+let _collapsedCats = new Set(); // persisted collapsed state across re-renders
+
+function _toggleCatCollapse(cat) {
+  if (_collapsedCats.has(cat)) _collapsedCats.delete(cat);
+  else _collapsedCats.add(cat);
+  // Toggle DOM without full re-render
+  document.querySelectorAll('.skills-category').forEach(sec => {
+    const header = sec.querySelector('.skills-cat-header');
+    if (header && header.dataset.cat === cat) {
+      const collapsed = _collapsedCats.has(cat);
+      sec.classList.toggle('collapsed', collapsed);
+      header.querySelector('.cat-chevron').style.transform = collapsed ? '' : 'rotate(90deg)';
+      sec.querySelectorAll('.skill-item').forEach(el => el.style.display = collapsed ? 'none' : '');
+    }
+  });
 }
 
 function renderSkills(skills) {
@@ -775,12 +1062,19 @@ function renderSkills(skills) {
   box.innerHTML = '';
   if (!filtered.length) { box.innerHTML = `<div style="padding:12px;color:var(--muted);font-size:12px">${esc(t('skills_no_match'))}</div>`; return; }
   for (const [cat, items] of Object.entries(cats).sort()) {
+    const collapsed = _collapsedCats.has(cat);
     const sec = document.createElement('div');
-    sec.className = 'skills-category';
-    sec.innerHTML = `<div class="skills-cat-header">${li('folder',12)} ${esc(cat)} <span style="opacity:.5">(${items.length})</span></div>`;
+    sec.className = 'skills-category' + (collapsed ? ' collapsed' : '');
+    const hdr = document.createElement('div');
+    hdr.className = 'skills-cat-header';
+    hdr.dataset.cat = cat;
+    hdr.innerHTML = `<span class="cat-chevron" style="display:inline-flex;transition:transform .15s;${collapsed ? '' : 'transform:rotate(90deg)'}">${li('chevron-right',12)}</span> ${esc(cat)} <span style="opacity:.5">(${items.length})</span>`;
+    hdr.onclick = () => _toggleCatCollapse(cat);
+    sec.appendChild(hdr);
     for (const skill of items.sort((a,b) => a.name.localeCompare(b.name))) {
       const el = document.createElement('div');
       el.className = 'skill-item';
+      el.style.display = collapsed ? 'none' : '';
       el.innerHTML = `<span class="skill-name">${esc(skill.name)}</span><span class="skill-desc">${esc(skill.description||'')}</span>`;
       el.onclick = () => openSkill(skill.name, el);
       sec.appendChild(el);
@@ -1284,15 +1578,22 @@ function syncWorkspaceDisplays(){
 
   const composerChip=$('composerWorkspaceChip');
   const composerLabel=$('composerWorkspaceLabel');
+  const mobileAction=$('composerMobileWorkspaceAction');
+  const mobileLabel=$('composerMobileWorkspaceLabel');
   const composerDropdown=$('composerWsDropdown');
   if(!hasWorkspace && composerDropdown) composerDropdown.classList.remove('open');
   // Only show workspace label once boot has finished to prevent
   // flash of "No workspace" before the saved session finishes loading.
   if(composerLabel) composerLabel.textContent=S._bootReady?label:'';
+  if(mobileLabel) mobileLabel.textContent=S._bootReady?label:'';
   if(composerChip){
     composerChip.disabled=!hasWorkspace;
     composerChip.title=hasWorkspace?ws:t('no_workspace');
     composerChip.classList.toggle('active',!!(composerDropdown&&composerDropdown.classList.contains('open')));
+  }
+  if(mobileAction){
+    mobileAction.title=hasWorkspace?ws:t('no_workspace');
+    mobileAction.classList.toggle('active',!!(composerDropdown&&composerDropdown.classList.contains('open')));
   }
 }
 
@@ -1316,9 +1617,13 @@ function _renderWorkspaceAction(label, meta, iconSvg, onClick){
 function _positionComposerWsDropdown(){
   const dd=$('composerWsDropdown');
   const chip=$('composerWorkspaceGroup')||$('composerWorkspaceChip');
+  const mobileAction=$('composerMobileWorkspaceAction');
+  const panel=$('composerMobileConfigPanel');
   const footer=document.querySelector('.composer-footer');
-  if(!dd||!chip||!footer)return;
-  const chipRect=chip.getBoundingClientRect();
+  // While the mobile config panel is open, anchor to #composerMobileWorkspaceAction instead of only the desktop workspace chip.
+  const anchor=(panel&&panel.classList.contains('open')&&mobileAction)?mobileAction:chip;
+  if(!dd||!anchor||!footer)return;
+  const chipRect=anchor.getBoundingClientRect();
   const footerRect=footer.getBoundingClientRect();
   let left=chipRect.left-footerRect.left;
   const maxLeft=Math.max(0, footer.clientWidth-dd.offsetWidth);
@@ -1382,17 +1687,22 @@ function toggleWsDropdown(){
 function toggleComposerWsDropdown(){
   const dd=$('composerWsDropdown');
   const chip=$('composerWorkspaceChip');
-  if(!dd||!chip||chip.disabled)return;
+  const mobileAction=$('composerMobileWorkspaceAction');
+  const panel=$('composerMobileConfigPanel');
+  const usingMobileAction=!!(panel&&panel.classList.contains('open')&&mobileAction);
+  if(!dd||(!usingMobileAction&&(!chip||chip.disabled)))return;
   const open=dd.classList.contains('open');
   if(open){closeWsDropdown();}
   else{
     closeProfileDropdown();
     if(typeof closeModelDropdown==='function') closeModelDropdown();
+    if(typeof closeReasoningDropdown==='function') closeReasoningDropdown();
     loadWorkspaceList().then(data=>{
       renderWorkspaceDropdownInto(dd, data.workspaces, S.session?S.session.workspace:'');
       dd.classList.add('open');
       _positionComposerWsDropdown();
-      chip.classList.add('active');
+      if(chip) chip.classList.add('active');
+      if(mobileAction) mobileAction.classList.add('active');
     });
   }
 }
@@ -1401,13 +1711,16 @@ function closeWsDropdown(){
   const dd=$('wsDropdown');
   const composerDd=$('composerWsDropdown');
   const composerChip=$('composerWorkspaceChip');
+  const mobileAction=$('composerMobileWorkspaceAction');
   if(dd)dd.classList.remove('open');
   if(composerDd)composerDd.classList.remove('open');
   if(composerChip)composerChip.classList.remove('active');
+  if(mobileAction)mobileAction.classList.remove('active');
 }
 document.addEventListener('click',e=>{
   if(
     !e.target.closest('#composerWorkspaceChip') &&
+    !e.target.closest('#composerMobileWorkspaceAction') &&
     !e.target.closest('#composerWsDropdown')
   ) closeWsDropdown();
 });
@@ -1427,19 +1740,76 @@ function renderWorkspacesPanel(workspaces){
   const panel=$('workspacesPanel');
   panel.innerHTML='';
   const activePath = S.session ? S.session.workspace : '';
-  for(const w of workspaces){
+  for(let i=0;i<workspaces.length;i++){
+    const w=workspaces[i];
     const row=document.createElement('div');
     row.className='ws-row';
     row.dataset.path = w.path;
+    row.draggable=true;
     const isActive = w.path === activePath;
     const activeBadge = isActive ? `<span class="detail-badge active" style="margin-left:6px;font-size:9px;padding:1px 6px">${esc(t('profile_active'))}</span>` : '';
     row.innerHTML=`
+      <span class="ws-drag-handle" title="${esc(t('workspace_drag_hint'))}">${li('grip-vertical',12)}</span>
       <div class="ws-row-info">
         <div class="ws-row-name">${esc(w.name)}${activeBadge}</div>
         <div class="ws-row-path">${esc(w.path)}</div>
       </div>`;
-    row.onclick = () => openWorkspaceDetail(w.path, row);
+    // Click on info area only — not on drag handle
+    const info=row.querySelector('.ws-row-info');
+    if(info) info.onclick = (e) => { e.stopPropagation(); openWorkspaceDetail(w.path, row); };
     if (_currentWorkspaceDetail && _currentWorkspaceDetail.path === w.path) row.classList.add('active');
+
+    // ── Drag-and-drop reorder ──
+    row.addEventListener('dragstart', (e) => {
+      // Only allow drag from the grip handle or the row itself
+      row.classList.add('dragging');
+      e.dataTransfer.effectAllowed='move';
+      e.dataTransfer.setData('text/plain', w.path);
+      // Required for Firefox drag ghost
+      if(e.dataTransfer.setDragImage) e.dataTransfer.setDragImage(row, 0, 0);
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      panel.querySelectorAll('.ws-row.drag-over').forEach(r => r.classList.remove('drag-over'));
+    });
+    row.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect='move';
+      // Highlight drop target
+      panel.querySelectorAll('.ws-row.drag-over').forEach(r => r.classList.remove('drag-over'));
+      if(!row.classList.contains('dragging')) row.classList.add('drag-over');
+    });
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('drag-over');
+    });
+    row.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      row.classList.remove('drag-over');
+      const fromPath = e.dataTransfer.getData('text/plain');
+      const toPath = w.path;
+      if(fromPath === toPath) return; // Same item, no-op
+      // Compute new order
+      const currentPaths = workspaces.map(ws => ws.path);
+      const fromIdx = currentPaths.indexOf(fromPath);
+      const toIdx = currentPaths.indexOf(toPath);
+      if(fromIdx < 0 || toIdx < 0) return;
+      currentPaths.splice(fromIdx, 1);
+      currentPaths.splice(toIdx, 0, fromPath);
+      try {
+        const res = await api('/api/workspaces/reorder', {
+          method: 'POST',
+          body: JSON.stringify({ paths: currentPaths })
+        });
+        if(res && res.ok){
+          renderWorkspacesPanel(res.workspaces);
+          // Also refresh sidebar dropdown
+          loadWorkspaceList().then(() => {});
+        }
+      } catch(err){
+        showToast(t('workspace_reorder_failed'), 'error');
+      }
+    });
+
     panel.appendChild(row);
   }
   const hint=document.createElement('div');
@@ -1476,11 +1846,18 @@ function _renderWorkspaceDetail(ws){
         <div class="detail-row"><div class="detail-row-label">Path</div><div class="detail-row-value"><code>${esc(ws.path)}</code></div></div>
         <div class="detail-row"><div class="detail-row-label">Status</div><div class="detail-row-value">${statusBadge}${defaultBadge}</div></div>
       </div>
+      <div class="detail-card" style="margin-top:12px">
+        <div class="detail-card-title">${esc(t('checkpoint_title'))}</div>
+        <div id="checkpointListContainer">
+          <div style="color:var(--muted);font-size:12px;padding:8px 0">${esc(t('checkpoint_loading'))}</div>
+        </div>
+      </div>
     </div>`;
   body.style.display = '';
   if (empty) empty.style.display = 'none';
   _workspaceMode = 'read';
   _setWorkspaceHeaderButtons('read', ws);
+  _loadCheckpoints(ws.path);
 }
 
 function _setWorkspaceHeaderButtons(mode, ws){
@@ -1780,7 +2157,7 @@ async function switchToWorkspace(path,name){
   try{
     closeWsDropdown();
     await api('/api/session/update',{method:'POST',body:JSON.stringify({
-      session_id:S.session.session_id, workspace:path, model:S.session.model
+      session_id:S.session.session_id, workspace:path, model:S.session.model, model_provider:S.session.model_provider||null
     })});
     S.session.workspace=path;
     // Explicit workspace switch = user overriding any pending profile-switch default.
@@ -2030,10 +2407,15 @@ async function switchToProfile(name) {
     const data = await api('/api/profile/switch', { method: 'POST', body: JSON.stringify({ name }) });
     S.activeProfile = data.active || name;
 
+    // Update composer placeholder and title bar while the core profile-switch
+    // state is still close to the profile API response.
+    if (typeof applyBotName === 'function') applyBotName();
+
     // ── Model + Workspace (parallelized) ───────────────────────────────────
     // populateModelDropdown hits /api/models; loadWorkspaceList hits /api/workspaces.
     // They are fully independent — run both simultaneously to cut switch time ~50%.
-    localStorage.removeItem('hermes-webui-model');
+    if(typeof _clearPersistedModelState==='function') _clearPersistedModelState();
+    else localStorage.removeItem('hermes-webui-model');
     _skillsData = null;
     _workspaceList = null;
     await Promise.all([populateModelDropdown(), loadWorkspaceList()]);
@@ -2041,12 +2423,17 @@ async function switchToProfile(name) {
     // ── Apply model ────────────────────────────────────────────────────────
     if (data.default_model) {
       const sel = $('modelSelect');
-      const resolved = _applyModelToDropdown(data.default_model, sel);
+      const resolved = _applyModelToDropdown(data.default_model, sel, window._activeProvider||null);
       const modelToUse = resolved || data.default_model;
+      const modelState = (typeof _modelStateForSelect==='function')
+        ? _modelStateForSelect(sel, modelToUse)
+        : {model:modelToUse,model_provider:null};
       S._pendingProfileModel = modelToUse;
+      S._pendingProfileModelProvider = modelState.model_provider||null;
       // Only patch the in-memory session model if we're NOT about to replace the session
       if (S.session && !sessionInProgress) {
         S.session.model = modelToUse;
+        S.session.model_provider = modelState.model_provider||null;
       }
     }
 
@@ -2066,6 +2453,7 @@ async function switchToProfile(name) {
             session_id: S.session.session_id,
             workspace: data.default_workspace,
             model: S.session.model,
+            model_provider: S.session.model_provider||null,
           })});
           S.session.workspace = data.default_workspace;
         } catch (_) {}
@@ -2086,6 +2474,7 @@ async function switchToProfile(name) {
             session_id: S.session.session_id,
             workspace: S._profileDefaultWorkspace,
             model: S.session.model,
+            model_provider: S.session.model_provider||null,
           })});
           S.session.workspace = S._profileDefaultWorkspace;
         } catch (_) {}
@@ -2099,6 +2488,9 @@ async function switchToProfile(name) {
       // No messages yet — just refresh the list and topbar in place
       await renderSessionList();
       syncTopbar();
+      // Refresh workspace file tree so the right panel shows the new
+      // profile's workspace, not the previous one (#1214).
+      if (S.session && S.session.workspace) loadDir('.');
       showToast(t('profile_switched', name));
     }
 
@@ -2108,9 +2500,6 @@ async function switchToProfile(name) {
     if (_currentPanel === 'tasks') await loadCrons();
     if (_currentPanel === 'profiles') await loadProfilesPanel();
     if (_currentPanel === 'workspaces') await loadWorkspacesPanel();
-
-    // Update composer placeholder and title bar to reflect profile name
-    if (typeof applyBotName === 'function') applyBotName();
 
   } catch (e) {
     // Revert the optimistic name update on error
@@ -2140,7 +2529,7 @@ function _renderProfileForm(){
       <form class="detail-form" onsubmit="event.preventDefault(); saveProfileForm();">
         <div class="detail-form-row">
           <label for="profileFormName">${esc(t('profile_name_label') || 'Name')}</label>
-          <input type="text" id="profileFormName" placeholder="${esc(t('profile_name_placeholder') || 'lowercase, a-z 0-9 hyphens')}" autocomplete="off" required>
+          <input type="text" id="profileFormName" placeholder="${esc(t('profile_name_placeholder') || 'lowercase, a-z 0-9 hyphens')}" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" required>
           <div class="detail-form-hint">${esc(t('profile_name_rule') || 'Lowercase letters, numbers, hyphens, underscores only.')}</div>
         </div>
         <div class="detail-form-row">
@@ -2150,7 +2539,7 @@ function _renderProfileForm(){
         </div>
         <div class="detail-form-row">
           <label for="profileFormBaseUrl">${esc(t('profile_base_url_label') || 'Base URL')}</label>
-          <input type="text" id="profileFormBaseUrl" placeholder="${esc(t('profile_base_url_placeholder') || 'Optional, e.g. http://localhost:11434')}" autocomplete="off">
+          <input type="text" id="profileFormBaseUrl" placeholder="${esc(t('profile_base_url_placeholder') || 'Optional, e.g. http://localhost:11434')}" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
         </div>
         <div class="detail-form-row">
           <label for="profileFormApiKey">${esc(t('profile_api_key_label') || 'API key')}</label>
@@ -2284,6 +2673,10 @@ let _settingsFontSizeOnOpen = null; // track font size at open time for discard 
 let _settingsHermesDefaultModelOnOpen = '';
 let _settingsSection = 'conversation';
 let _currentSettingsSection = 'conversation';
+let _settingsAppearanceAutosaveTimer = null;
+let _settingsAppearanceAutosaveRetryPayload = null;
+let _settingsPreferencesAutosaveTimer = null;
+let _settingsPreferencesAutosaveRetryPayload = null;
 
 function switchSettingsSection(name){
   const section=(name==='appearance'||name==='preferences'||name==='providers'||name==='system')?name:'conversation';
@@ -2342,6 +2735,7 @@ function toggleSettings(){
 function _resetSettingsPanelState(){
   const bar=$('settingsUnsavedBar');
   if(bar) bar.style.display='none';
+  _setAppearanceAutosaveStatus('');
 }
 
 function _hideSettingsPanel(){
@@ -2363,18 +2757,9 @@ function _closeSettingsPanel(){
 
 // Revert live DOM/localStorage to what they were when the panel opened
 function _revertSettingsPreview(){
-  if(_settingsThemeOnOpen){
-    localStorage.setItem('hermes-theme', _settingsThemeOnOpen);
-    if(typeof _applyTheme==='function') _applyTheme(_settingsThemeOnOpen);
-  }
-  if(_settingsSkinOnOpen){
-    localStorage.setItem('hermes-skin', _settingsSkinOnOpen);
-    if(typeof _applySkin==='function') _applySkin(_settingsSkinOnOpen);
-  }
-  if(_settingsFontSizeOnOpen){
-    localStorage.setItem('hermes-font-size', _settingsFontSizeOnOpen);
-    if(typeof _applyFontSize==='function') _applyFontSize(_settingsFontSizeOnOpen);
-  }
+  // Appearance controls autosave immediately. Closing/discarding the settings
+  // panel must not roll back theme, skin, or font-size after the user sees the
+  // inline saved state.
 }
 
 // Show the "Unsaved changes" bar inside the settings panel
@@ -2405,6 +2790,181 @@ function _markSettingsDirty(){
   _settingsDirty = true;
 }
 
+// Apply TTS enabled state: toggles a body class so the CSS rule
+// `body.tts-enabled .msg-tts-btn` shows/hides the speaker icon. We toggle the
+// body class instead of writing inline `style.display` because the parent
+// `.msg-action-btn` has no display rule, so clearing the inline style let the
+// `.msg-tts-btn{display:none;}` cascade re-hide the button (#1409).
+function _applyTtsEnabled(enabled){
+  document.body.classList.toggle('tts-enabled', !!enabled);
+}
+
+function _appearancePayloadFromUi(){
+  return {
+    theme: ($('settingsTheme')||{}).value || localStorage.getItem('hermes-theme') || 'dark',
+    skin: ($('settingsSkin')||{}).value || localStorage.getItem('hermes-skin') || 'default',
+    font_size: ($('settingsFontSize')||{}).value || localStorage.getItem('hermes-font-size') || 'default',
+  };
+}
+
+function _setAppearanceAutosaveStatus(state){
+  const el=$('settingsAppearanceAutosaveStatus');
+  if(!el) return;
+  el.className='settings-autosave-status';
+  if(!state){
+    el.textContent='';
+    return;
+  }
+  el.classList.add('is-'+state);
+  if(state==='saving'){
+    el.textContent=t('settings_autosave_saving');
+  }else if(state==='saved'){
+    el.textContent=t('settings_autosave_saved');
+  }else if(state==='failed'){
+    el.innerHTML=`<span>${esc(t('settings_autosave_failed'))}</span> <button type="button" onclick="_retryAppearanceAutosave()">${esc(t('settings_autosave_retry'))}</button>`;
+  }
+}
+
+function _rememberAppearanceSaved(payload){
+  if(!payload) return;
+  _settingsThemeOnOpen=payload.theme||localStorage.getItem('hermes-theme')||'dark';
+  _settingsSkinOnOpen=payload.skin||localStorage.getItem('hermes-skin')||'default';
+  _settingsFontSizeOnOpen=payload.font_size||localStorage.getItem('hermes-font-size')||'default';
+}
+
+function _scheduleAppearanceAutosave(){
+  const payload=_appearancePayloadFromUi();
+  // Keep discard/close behavior aligned with the new mental model: appearance
+  // changes are committed immediately instead of treated as preview-only edits.
+  _rememberAppearanceSaved(payload);
+  _settingsAppearanceAutosaveRetryPayload=payload;
+  _setAppearanceAutosaveStatus('saving');
+  if(_settingsAppearanceAutosaveTimer) clearTimeout(_settingsAppearanceAutosaveTimer);
+  _settingsAppearanceAutosaveTimer=setTimeout(()=>_autosaveAppearanceSettings(payload),350);
+}
+
+async function _autosaveAppearanceSettings(payload){
+  try{
+    const saved=await api('/api/settings',{method:'POST',body:JSON.stringify(payload)});
+    _settingsAppearanceAutosaveRetryPayload=null;
+    _rememberAppearanceSaved(payload);
+    if(saved&&saved.font_size){
+      localStorage.setItem('hermes-font-size',saved.font_size);
+    }
+    _setAppearanceAutosaveStatus('saved');
+  }catch(e){
+    console.warn('[settings] appearance autosave failed', e);
+    _setAppearanceAutosaveStatus('failed');
+  }
+}
+
+function _retryAppearanceAutosave(){
+  const payload=_settingsAppearanceAutosaveRetryPayload||_appearancePayloadFromUi();
+  _setAppearanceAutosaveStatus('saving');
+  _autosaveAppearanceSettings(payload);
+}
+
+// ── Phase 2: Preferences autosave (Issue #1003) ───────────────────────
+
+function _preferencesPayloadFromUi(){
+  const payload={};
+  const sendKeySel=$('settingsSendKey');
+  if(sendKeySel) payload.send_key=sendKeySel.value;
+  const langSel=$('settingsLanguage');
+  if(langSel) payload.language=langSel.value;
+  const showUsageCb=$('settingsShowTokenUsage');
+  if(showUsageCb) payload.show_token_usage=showUsageCb.checked;
+  const simplifiedToolCb=$('settingsSimplifiedToolCalling');
+  if(simplifiedToolCb) payload.simplified_tool_calling=simplifiedToolCb.checked;
+  const apiRedactCb=$('settingsApiRedact');
+  if(apiRedactCb) payload.api_redact_enabled=apiRedactCb.checked;
+  const showCliCb=$('settingsShowCliSessions');
+  if(showCliCb) payload.show_cli_sessions=showCliCb.checked;
+  const syncCb=$('settingsSyncInsights');
+  if(syncCb) payload.sync_to_insights=syncCb.checked;
+  const updateCb=$('settingsCheckUpdates');
+  if(updateCb) payload.check_for_updates=updateCb.checked;
+  const soundCb=$('settingsSoundEnabled');
+  if(soundCb) payload.sound_enabled=soundCb.checked;
+  const notifCb=$('settingsNotificationsEnabled');
+  if(notifCb) payload.notifications_enabled=notifCb.checked;
+  const sidebarDensitySel=$('settingsSidebarDensity');
+  if(sidebarDensitySel) payload.sidebar_density=sidebarDensitySel.value;
+  const autoTitleRefreshSel=$('settingsAutoTitleRefresh');
+  if(autoTitleRefreshSel) payload.auto_title_refresh_every=parseInt(autoTitleRefreshSel.value,10);
+  const busyInputModeSel=$('settingsBusyInputMode');
+  if(busyInputModeSel) payload.busy_input_mode=busyInputModeSel.value;
+  const botNameField=$('settingsBotName');
+  if(botNameField) payload.bot_name=botNameField.value;
+  return payload;
+}
+
+function _setPreferencesAutosaveStatus(state){
+  const el=$('settingsPreferencesAutosaveStatus');
+  if(!el) return;
+  el.className='settings-autosave-status';
+  if(!state){
+    el.textContent='';
+    return;
+  }
+  el.classList.add('is-'+state);
+  if(state==='saving'){
+    el.textContent=t('settings_autosave_saving');
+  }else if(state==='saved'){
+    el.textContent=t('settings_autosave_saved');
+  }else if(state==='failed'){
+    el.innerHTML=`<span>${esc(t('settings_autosave_failed'))}</span> <button type=\"button\" onclick=\"_retryPreferencesAutosave()\">${esc(t('settings_autosave_retry'))}</button>`;
+  }
+}
+
+function _rememberPreferencesSaved(payload){
+  if(!payload) return;
+  if(payload.send_key!==undefined) localStorage.setItem('hermes-pref-send_key',payload.send_key);
+  if(payload.language!==undefined) localStorage.setItem('hermes-pref-language',payload.language);
+}
+
+function _schedulePreferencesAutosave(){
+  const payload=_preferencesPayloadFromUi();
+  _rememberPreferencesSaved(payload);
+  _settingsPreferencesAutosaveRetryPayload=payload;
+  _setPreferencesAutosaveStatus('saving');
+  if(_settingsPreferencesAutosaveTimer) clearTimeout(_settingsPreferencesAutosaveTimer);
+  _settingsPreferencesAutosaveTimer=setTimeout(()=>_autosavePreferencesSettings(payload),350);
+}
+
+async function _autosavePreferencesSettings(payload){
+  try{
+    await api('/api/settings',{method:'POST',body:JSON.stringify(payload)});
+    _settingsPreferencesAutosaveRetryPayload=null;
+    _setPreferencesAutosaveStatus('saved');
+    // Only clear the global dirty flag and hide the unsaved-changes bar when
+    // there is no pending edit on a manually-saved field. Password and model
+    // are still committed via the explicit "Save Settings" button (password
+    // for security; model goes through /api/default-model). Without this
+    // guard, autosaving a checkbox right after a user typed in the password
+    // field would silently dismiss the password edit. (Opus pre-release
+    // review of v0.50.250, SHOULD-FIX Q1.)
+    const pwField=$('settingsPassword');
+    const pwDirty=!!(pwField&&pwField.value);
+    const modelSel=$('settingsModel');
+    const modelDirty=!!(modelSel&&((modelSel.value||'')!==(_settingsHermesDefaultModelOnOpen||'')));
+    if(!pwDirty&&!modelDirty){
+      _settingsDirty=false;
+      const bar=$('settingsUnsavedBar');
+      if(bar) bar.style.display='none';
+    }
+  }catch(e){
+    console.warn('[settings] preferences autosave failed', e);
+    _setPreferencesAutosaveStatus('failed');
+  }
+}
+
+function _retryPreferencesAutosave(){
+  const payload=_settingsPreferencesAutosaveRetryPayload||_preferencesPayloadFromUi();
+  _setPreferencesAutosaveStatus('saving');
+  _autosavePreferencesSettings(payload);
+}
+
 async function loadSettingsPanel(){
   try{
     const settings=await api('/api/settings');
@@ -2422,7 +2982,9 @@ async function loadSettingsPanel(){
     const skinSel=$('settingsSkin');
     if(skinSel) skinSel.value=skinVal;
     if(typeof _buildSkinPicker==='function') _buildSkinPicker(skinVal);
-    const fontSizeVal=localStorage.getItem('hermes-font-size')||'default';
+    const fontSizeVal=settings.font_size||localStorage.getItem('hermes-font-size')||'default';
+    localStorage.setItem('hermes-font-size',fontSizeVal);
+    if(typeof _applyFontSize==='function') _applyFontSize(fontSizeVal);
     const fontSizeSel=$('settingsFontSize');
     if(fontSizeSel) fontSizeSel.value=fontSizeVal;
     if(typeof _syncFontSizePicker==='function') _syncFontSizePicker(fontSizeVal);
@@ -2481,7 +3043,7 @@ async function loadSettingsPanel(){
       // picker renders blank for any user whose default was persisted without the
       // @-prefix — CLI-first users, legacy installs, etc.
       if(typeof _applyModelToDropdown==='function'){
-        _applyModelToDropdown(_settingsHermesDefaultModelOnOpen, modelSel);
+        _applyModelToDropdown(_settingsHermesDefaultModelOnOpen, modelSel, (models&&models.active_provider)||window._activeProvider||null);
       }else{
         modelSel.value=_settingsHermesDefaultModelOnOpen;
       }
@@ -2489,7 +3051,7 @@ async function loadSettingsPanel(){
     }
     // Send key preference
     const sendKeySel=$('settingsSendKey');
-    if(sendKeySel){sendKeySel.value=settings.send_key||'enter';sendKeySel.addEventListener('change',_markSettingsDirty,{once:false});}
+    if(sendKeySel){sendKeySel.value=settings.send_key||'enter';sendKeySel.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     // Language preference — populate from LOCALES bundle
     const langSel=$('settingsLanguage');
     if(langSel){
@@ -2502,42 +3064,93 @@ async function loadSettingsPanel(){
         }
       }
       langSel.value=resolvedLanguage;
-      langSel.addEventListener('change',_markSettingsDirty,{once:false});
+      langSel.addEventListener('change',_schedulePreferencesAutosave,{once:false});
     }
     const showUsageCb=$('settingsShowTokenUsage');
-    if(showUsageCb){showUsageCb.checked=!!settings.show_token_usage;showUsageCb.addEventListener('change',_markSettingsDirty,{once:false});}
+    if(showUsageCb){showUsageCb.checked=!!settings.show_token_usage;showUsageCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
+    const simplifiedToolCb=$('settingsSimplifiedToolCalling');
+    if(simplifiedToolCb){simplifiedToolCb.checked=settings.simplified_tool_calling!==false;simplifiedToolCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
+    const apiRedactCb=$('settingsApiRedact');
+    if(apiRedactCb){apiRedactCb.checked=settings.api_redact_enabled!==false;apiRedactCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     const showCliCb=$('settingsShowCliSessions');
-    if(showCliCb){showCliCb.checked=!!settings.show_cli_sessions;showCliCb.addEventListener('change',_markSettingsDirty,{once:false});}
+    if(showCliCb){showCliCb.checked=!!settings.show_cli_sessions;showCliCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     const syncCb=$('settingsSyncInsights');
-    if(syncCb){syncCb.checked=!!settings.sync_to_insights;syncCb.addEventListener('change',_markSettingsDirty,{once:false});}
+    if(syncCb){syncCb.checked=!!settings.sync_to_insights;syncCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     const updateCb=$('settingsCheckUpdates');
-    if(updateCb){updateCb.checked=settings.check_for_updates!==false;updateCb.addEventListener('change',_markSettingsDirty,{once:false});}
+    if(updateCb){updateCb.checked=settings.check_for_updates!==false;updateCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     const soundCb=$('settingsSoundEnabled');
-    if(soundCb){soundCb.checked=!!settings.sound_enabled;soundCb.addEventListener('change',_markSettingsDirty,{once:false});}
+    if(soundCb){soundCb.checked=!!settings.sound_enabled;soundCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
+    // TTS settings (localStorage-only, no server round-trip needed)
+    const ttsEnabledCb=$('settingsTtsEnabled');
+    if(ttsEnabledCb){ttsEnabledCb.checked=localStorage.getItem('hermes-tts-enabled')==='true';ttsEnabledCb.onchange=function(){localStorage.setItem('hermes-tts-enabled',this.checked?'true':'false');_applyTtsEnabled(this.checked);};}
+    const ttsAutoReadCb=$('settingsTtsAutoRead');
+    if(ttsAutoReadCb){ttsAutoReadCb.checked=localStorage.getItem('hermes-tts-auto-read')==='true';ttsAutoReadCb.onchange=function(){localStorage.setItem('hermes-tts-auto-read',this.checked?'true':'false');};}
+    // Populate voice selector from speechSynthesis
+    const ttsVoiceSel=$('settingsTtsVoice');
+    if(ttsVoiceSel&&'speechSynthesis' in window){
+      const populateVoices=()=>{
+        const voices=speechSynthesis.getVoices();
+        const current=localStorage.getItem('hermes-tts-voice')||'';
+        ttsVoiceSel.innerHTML='<option value="">Default system voice</option>';
+        voices.forEach(v=>{
+          const opt=document.createElement('option');
+          opt.value=v.name;opt.textContent=v.name+(v.lang?' ('+v.lang+')':'');
+          if(v.name===current) opt.selected=true;
+          ttsVoiceSel.appendChild(opt);
+        });
+      };
+      populateVoices();
+      speechSynthesis.addEventListener('voiceschanged',populateVoices,{once:true});
+      ttsVoiceSel.onchange=function(){localStorage.setItem('hermes-tts-voice',this.value);};
+    }
+    // TTS rate/pitch sliders
+    const ttsRateSlider=$('settingsTtsRate');
+    const ttsRateValue=$('settingsTtsRateValue');
+    if(ttsRateSlider){
+      const savedRate=localStorage.getItem('hermes-tts-rate');
+      ttsRateSlider.value=savedRate||'1';
+      if(ttsRateValue) ttsRateValue.textContent=parseFloat(ttsRateSlider.value).toFixed(1)+'x';
+      ttsRateSlider.oninput=function(){if(ttsRateValue)ttsRateValue.textContent=parseFloat(this.value).toFixed(1)+'x';localStorage.setItem('hermes-tts-rate',this.value);};
+    }
+    const ttsPitchSlider=$('settingsTtsPitch');
+    const ttsPitchValue=$('settingsTtsPitchValue');
+    if(ttsPitchSlider){
+      const savedPitch=localStorage.getItem('hermes-tts-pitch');
+      ttsPitchSlider.value=savedPitch||'1';
+      if(ttsPitchValue) ttsPitchValue.textContent=parseFloat(ttsPitchSlider.value).toFixed(1);
+      ttsPitchSlider.oninput=function(){if(ttsPitchValue)ttsPitchValue.textContent=parseFloat(this.value).toFixed(1);localStorage.setItem('hermes-tts-pitch',this.value);};
+    }
     const notifCb=$('settingsNotificationsEnabled');
-    if(notifCb){notifCb.checked=!!settings.notifications_enabled;notifCb.addEventListener('change',_markSettingsDirty,{once:false});}
+    if(notifCb){notifCb.checked=!!settings.notifications_enabled;notifCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     // show_thinking has no settings panel checkbox — controlled via /reasoning show|hide
     const sidebarDensitySel=$('settingsSidebarDensity');
     if(sidebarDensitySel){
       sidebarDensitySel.value=settings.sidebar_density==='detailed'?'detailed':'compact';
-      sidebarDensitySel.addEventListener('change',_markSettingsDirty,{once:false});
+      sidebarDensitySel.addEventListener('change',_schedulePreferencesAutosave,{once:false});
     }
     const autoTitleRefreshSel=$('settingsAutoTitleRefresh');
     if(autoTitleRefreshSel){
       const val=String(settings.auto_title_refresh_every||'0');
       autoTitleRefreshSel.value=['0','5','10','20'].includes(val)?val:'0';
-      autoTitleRefreshSel.addEventListener('change',_markSettingsDirty,{once:false});
+      autoTitleRefreshSel.addEventListener('change',_schedulePreferencesAutosave,{once:false});
     }
     // Busy input mode
     const busyInputModeSel=$('settingsBusyInputMode');
     if(busyInputModeSel){
       const val=String(settings.busy_input_mode||'queue');
       busyInputModeSel.value=['queue','interrupt','steer'].includes(val)?val:'queue';
-      busyInputModeSel.addEventListener('change',_markSettingsDirty,{once:false});
+      busyInputModeSel.addEventListener('change',_schedulePreferencesAutosave,{once:false});
     }
-    // Bot name
+    // Bot name — debounced autosave (text input)
     const botNameField=$('settingsBotName');
-    if(botNameField){botNameField.value=settings.bot_name||'Hermes';botNameField.addEventListener('input',_markSettingsDirty,{once:false});}
+    if(botNameField){
+      botNameField.value=settings.bot_name||'Hermes';
+      let botNameTimer=null;
+      botNameField.addEventListener('input',()=>{
+        if(botNameTimer) clearTimeout(botNameTimer);
+        botNameTimer=setTimeout(_schedulePreferencesAutosave,500);
+      },{once:false});
+    }
     // Password field: always blank (we don't send hash back)
     const pwField=$('settingsPassword');
     if(pwField){pwField.value='';pwField.addEventListener('input',_markSettingsDirty,{once:false});}
@@ -2680,6 +3293,26 @@ function _buildProviderCard(p){
   field.appendChild(row);
   body.appendChild(field);
 
+  // Model list — show when provider has known models
+  if(modelCount>0){
+    const modelSection=document.createElement('div');
+    modelSection.className='provider-card-models';
+    const modelLabel=document.createElement('div');
+    modelLabel.className='provider-card-label';
+    modelLabel.textContent='Models';
+    modelSection.appendChild(modelLabel);
+    const modelList=document.createElement('div');
+    modelList.className='provider-card-model-tags';
+    for(const m of p.models){
+      const tag=document.createElement('span');
+      tag.className='provider-card-model-tag';
+      tag.textContent=m.id||m.label||m;
+      modelList.appendChild(tag);
+    }
+    modelSection.appendChild(modelList);
+    body.appendChild(modelSection);
+  }
+
   // Refresh models for this provider
   const refreshRow=document.createElement('div');
   refreshRow.className='provider-card-row';
@@ -2788,6 +3421,7 @@ function _applySavedSettingsUi(saved, body, opts){
   window._soundEnabled=body.sound_enabled;
   window._notificationsEnabled=body.notifications_enabled;
   window._showThinking=body.show_thinking!==false;
+  window._simplifiedToolCalling=body.simplified_tool_calling!==false;
   window._sidebarDensity=sidebarDensity==='detailed'?'detailed':'compact';
   window._busyInputMode=body.busy_input_mode||'queue';
   window._botName=body.bot_name||'Hermes';
@@ -2808,6 +3442,7 @@ function _applySavedSettingsUi(saved, body, opts){
   _settingsHermesDefaultModelOnOpen=body.default_model||_settingsHermesDefaultModelOnOpen||'';
   // Sync window._defaultModel so newSession() uses the just-saved default without a reload (#908).
   if(body.default_model) window._defaultModel=body.default_model;
+  if(typeof clearMessageRenderCache==='function') clearMessageRenderCache();
   renderMessages();
   if(typeof syncTopbar==='function') syncTopbar();
   if(typeof renderSessionList==='function') renderSessionList();
@@ -2877,8 +3512,11 @@ async function saveSettings(andClose){
   if(sendKey) body.send_key=sendKey;
   body.theme=theme;
   body.skin=skin;
+  body.font_size=fontSize;
   body.language=language;
   body.show_token_usage=showTokenUsage;
+  body.simplified_tool_calling=!!($('settingsSimplifiedToolCalling')||{}).checked;
+  body.api_redact_enabled=!!($('settingsApiRedact')||{}).checked;
   body.show_cli_sessions=showCliSessions;
   body.sync_to_insights=!!($('settingsSyncInsights')||{}).checked;
   body.check_for_updates=!!($('settingsCheckUpdates')||{}).checked;
@@ -3069,3 +3707,208 @@ function dismissErrorBanner(){
 }
 
 // Event wiring
+
+
+// ── MCP Server Management ──
+function loadMcpServers(){
+  const list=$('mcpServerList');
+  if(!list) return;
+  api('/api/mcp/servers').then(r=>{
+    if(!r||!r.servers) return;
+    if(!r.servers.length){
+      list.innerHTML=`<div style="color:var(--muted);font-size:12px;padding:6px 0">${t('mcp_no_servers')}</div>`;
+      return;
+    }
+    list.innerHTML=r.servers.map(s=>{
+      const transportLabel=s.transport==='http'?'HTTP':s.transport==='stdio'?'stdio':(''+s.transport);
+      const transportClass=s.transport==='http'?'mcp-http':s.transport==='stdio'?'mcp-stdio':'mcp-unknown';
+      const badge=`<span class="mcp-transport-badge ${transportClass}">${esc(transportLabel)}</span>`;
+      const detail=s.transport==='http'?s.url:`${s.command} ${s.args?s.args.join(' '):''}`;
+      const envInfo=s.env?Object.entries(s.env).map(([k,v])=>`${k}=${v}`).join(', '):'';
+      return `<div class="mcp-server-row">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="mcp-server-name">${esc(s.name)}</span>${badge}
+        </div>
+        <div class="mcp-server-detail">${esc(detail)}${envInfo?' | '+esc(envInfo):''}</div>
+        <button class="mcp-delete-btn" data-mcp-name="${esc(s.name)}" title="Delete">&times;</button>
+      </div>`;
+    }).join('');
+  }).catch(()=>{list.innerHTML=`<div style="color:#ef4444;font-size:12px;padding:6px 0">${t('mcp_load_failed')}</div>`});
+  // Delegate delete-button clicks — uses data-mcp-name to avoid inline onclick XSS
+  if(list&&!list._mcpDeleteBound){
+    list._mcpDeleteBound=true;
+    list.addEventListener('click',function(e){
+      const btn=e.target.closest('.mcp-delete-btn');
+      if(!btn) return;
+      const name=btn.getAttribute('data-mcp-name');
+      if(name) deleteMcpServer(name);
+    });
+  }
+}
+
+function showMcpAddForm(){
+  const wrap=$('mcpAddFormWrap');
+  if(wrap) wrap.style.display='block';
+}
+function hideMcpAddForm(){
+  const wrap=$('mcpAddFormWrap');
+  if(wrap) wrap.style.display='none';
+  ['mcpName','mcpCommand','mcpArgs','mcpUrl','mcpTimeout'].forEach(id=>{
+    const el=$(id);if(el)el.value=id==='mcpTimeout'?'120':'';
+  });
+  const tr=$('mcpTransport');if(tr)tr.value='stdio';
+  mcpTransportChanged();
+}
+function mcpTransportChanged(){
+  const tr=$('mcpTransport');
+  const isHttp=tr&&tr.value==='http';
+  const cmdF=$('mcpCommandField');if(cmdF)cmdF.style.display=isHttp?'none':'';
+  const argsF=$('mcpArgsField');if(argsF)argsF.style.display=isHttp?'none':'';
+  const urlF=$('mcpUrlField');if(urlF)urlF.style.display=isHttp?'block':'none';
+}
+function saveMcpServer(){
+  const name=($('mcpName')||{}).value||'';
+  if(!name.trim()){showToast(t('mcp_name_required'));return;}
+  const tr=($('mcpTransport')||{}).value||'stdio';
+  const timeout=parseInt(($('mcpTimeout')||{}).value)||120;
+  const body={timeout};
+  if(tr==='http'){
+    body.url=($('mcpUrl')||{}).value||'';
+    if(!body.url.trim()){showToast(t('mcp_url_required'));return;}
+  }else{
+    body.command=($('mcpCommand')||{}).value||'';
+    if(!body.command.trim()){showToast(t('mcp_command_required'));return;}
+    const argsStr=($('mcpArgs')||{}).value||'';
+    if(argsStr.trim()) body.args=argsStr.split(',').map(a=>a.trim()).filter(Boolean);
+  }
+  const encName=encodeURIComponent(name.trim());
+  api(`/api/mcp/servers/${encName}`,{method:'PUT',body:JSON.stringify(body)})
+    .then(r=>{
+      if(r&&r.ok){showToast(t('mcp_saved'));hideMcpAddForm();loadMcpServers();}
+      else{showToast((r&&r.error)||t('mcp_save_failed'));}
+    }).catch(()=>{showToast(t('mcp_save_failed'));});
+}
+async function deleteMcpServer(name){
+  const _ok=await showConfirmDialog({title:t('mcp_delete_confirm_title'),message:t('mcp_delete_confirm_message',name),confirmLabel:t('delete_title'),danger:true,focusCancel:true});
+  if(!_ok) return;
+  const encName=encodeURIComponent(name);
+  api(`/api/mcp/servers/${encName}`,{method:'DELETE'})
+    .then(r=>{
+      if(r&&r.ok){showToast(t('mcp_deleted'));loadMcpServers();}
+      else{showToast((r&&r.error)||t('mcp_delete_failed'));}
+    }).catch(()=>{showToast(t('mcp_delete_failed'));});
+}
+// Load MCP servers when system settings tab opens
+const _origSwitchSettings=switchSettingsSection;
+switchSettingsSection=function(name){
+  _origSwitchSettings(name);
+  if(name==='system') loadMcpServers();
+};
+
+// ── Checkpoints / Rollback ──────────────────────────────────────────────────
+
+async function _loadCheckpoints(workspace){
+  const container=$('checkpointListContainer');
+  if(!container) return;
+  try{
+    const data=await api(`/api/rollback/list?workspace=${encodeURIComponent(workspace)}`);
+    const checkpoints=data.checkpoints||[];
+    if(!checkpoints.length){
+      container.innerHTML=`<div style="color:var(--muted);font-size:12px;padding:8px 0">${esc(t('checkpoint_empty'))}</div>`;
+      return;
+    }
+    let html='';
+    for(const ck of checkpoints){
+      const shortId=ck.id||ck.commit||'?';
+      const msg=ck.message||'checkpoint';
+      const date=ck.date_display||ck.date||'';
+      const files=ck.files||0;
+      html+=`
+        <div class="detail-row" style="align-items:center;padding:6px 0;border-bottom:1px solid var(--border,rgba(255,255,255,0.08))">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(msg)}">${esc(msg)}</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px">
+              <code style="font-size:10px">${esc(shortId)}</code>
+              ${date ? ` · ${esc(date)}` : ''}
+              ${files ? ` · ${esc(t('checkpoint_files'))}: ${files}` : ''}
+            </div>
+          </div>
+          <div style="display:flex;gap:4px;flex-shrink:0;margin-left:8px">
+            <button class="panel-head-btn" title="${esc(t('checkpoint_view_diff'))}" onclick="event.stopPropagation();_viewCheckpointDiff('${esc(workspace)}','${esc(ck.id)}')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+            </button>
+            <button class="panel-head-btn" title="${esc(t('checkpoint_restore'))}" onclick="event.stopPropagation();_restoreCheckpoint('${esc(workspace)}','${esc(ck.id)}','${esc(msg.replace(/'/g,"\\'"))}')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+            </button>
+          </div>
+        </div>`;
+    }
+    container.innerHTML=html;
+  }catch(e){
+    container.innerHTML=`<div style="color:var(--error,#f87171);font-size:12px;padding:8px 0">${esc(t('checkpoint_error'))}: ${esc(e.message)}</div>`;
+  }
+}
+
+async function _viewCheckpointDiff(workspace,checkpoint){
+  const modal=document.getElementById('checkpointDiffModal');
+  if(!modal){
+    const m=document.createElement('div');
+    m.id='checkpointDiffModal';
+    m.style.cssText='position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6)';
+    m.innerHTML=`
+      <div style="background:var(--bg,${getComputedStyle(document.documentElement).getPropertyValue('--bg')||'#1a1a2e'});border:1px solid var(--border,rgba(255,255,255,0.12));border-radius:12px;width:90vw;max-width:800px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.4)">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border,rgba(255,255,255,0.08))">
+          <div id="checkpointDiffModalTitle" style="font-weight:600;font-size:14px"></div>
+          <button onclick="document.getElementById('checkpointDiffModal').style.display='none'" style="background:none;border:none;color:var(--fg);cursor:pointer;font-size:18px;padding:0 4px">&times;</button>
+        </div>
+        <div id="checkpointDiffModalBody" style="flex:1;overflow:auto;padding:12px 16px">
+          <div style="color:var(--muted);font-size:12px">${esc(t('checkpoint_loading'))}</div>
+        </div>
+      </div>`;
+    m.onclick=(e)=>{if(e.target===m) m.style.display='none';};
+    document.body.appendChild(m);
+  }
+  modal.style.display='flex';
+  $('checkpointDiffModalTitle').textContent=t('checkpoint_diff_title');
+  $('checkpointDiffModalBody').innerHTML=`<div style="color:var(--muted);font-size:12px">${esc(t('checkpoint_loading'))}</div>`;
+  try{
+    const data=await api(`/api/rollback/diff?workspace=${encodeURIComponent(workspace)}&checkpoint=${encodeURIComponent(checkpoint)}`);
+    const body=$('checkpointDiffModalBody');
+    if(!data.total_changes){
+      body.innerHTML=`<div style="color:var(--muted);font-size:12px">${esc(t('checkpoint_diff_no_changes'))}</div>`;
+      return;
+    }
+    let html=`<div style="font-size:12px;margin-bottom:8px">${esc(t('checkpoint_diff_files_changed',data.total_changes))}</div>`;
+    if(data.files_changed){
+      html+='<div style="margin-bottom:8px">';
+      for(const f of data.files_changed){
+        const icon=f.status==='deleted'?'−':'~';
+        const color=f.status==='deleted'?'var(--error,#f87171)':'var(--accent,#60a5fa)';
+        html+=`<div style="font-size:12px;padding:2px 0"><span style="color:${color};font-weight:bold;margin-right:6px">${icon}</span><code style="font-size:11px">${esc(f.file)}</code></div>`;
+      }
+      html+='</div>';
+    }
+    if(data.diff){
+      html+=`<pre style="background:var(--bg-secondary,rgba(0,0,0,0.3));border:1px solid var(--border,rgba(255,255,255,0.08));border-radius:8px;padding:12px;font-size:11px;line-height:1.4;overflow-x:auto;white-space:pre-wrap;word-break:break-all;max-height:50vh;overflow-y:auto;color:var(--fg)">${esc(data.diff)}</pre>`;
+    }
+    body.innerHTML=html;
+  }catch(e){
+    $('checkpointDiffModalBody').innerHTML=`<div style="color:var(--error,#f87171);font-size:12px">${esc(e.message)}</div>`;
+  }
+}
+
+async function _restoreCheckpoint(workspace,checkpoint,message){
+  const label=message||checkpoint;
+  const ok=await showConfirmDialog({title:t('checkpoint_restore_confirm_title'),message:t('checkpoint_restore_confirm_message',label),confirmLabel:t('checkpoint_restore'),danger:true,focusCancel:true});
+  if(!ok) return;
+  try{
+    const data=await api('/api/rollback/restore',{method:'POST',body:JSON.stringify({workspace,checkpoint})});
+    if(data&&data.ok){
+      showToast(t('checkpoint_restored')+(data.files_restored_count?` (${data.files_restored_count} ${t('checkpoint_files').toLowerCase()})`:''));
+    }else{
+      showToast((data&&data.error)||'Restore failed','error');
+    }
+  }catch(e){
+    showToast(t('checkpoint_restore')+': '+e.message,'error');
+  }
+}

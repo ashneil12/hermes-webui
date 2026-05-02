@@ -2,12 +2,11 @@ async function cancelStream(){
   const streamId = S.activeStreamId;
   if(!streamId) return;
   try{
-    await fetch(new URL(`api/chat/cancel?stream_id=${encodeURIComponent(streamId)}`,location.href).href,{credentials:'include'});
+    await fetch(new URL(`api/chat/cancel?stream_id=${encodeURIComponent(streamId)}`,document.baseURI||location.href).href,{credentials:'include'});
   }catch(e){/* cancel request failed — cleanup below still runs */}
   // Clear status unconditionally after the cancel request completes.
   // The SSE cancel event may also fire, but if the connection is already
   // closed it won't arrive — so we handle cleanup here as the guaranteed path.
-  const btn=$('btnCancel');if(btn)btn.style.display='none';
   S.activeStreamId=null;
   setBusy(false);
   if(typeof setComposerStatus==='function') setComposerStatus('');
@@ -19,6 +18,23 @@ let _workspacePanelMode='closed'; // 'closed' | 'browse' | 'preview'
 
 function _isCompactWorkspaceViewport(){
   return window.matchMedia('(max-width: 900px)').matches;
+}
+
+function _syncWorkspacePanelInlineWidth(){
+  const {panel}= _workspacePanelEls();
+  if(!panel) return;
+
+  const isCompact = _isCompactWorkspaceViewport();
+  if(isCompact){
+    if(panel.style.width) panel.style.removeProperty('width');
+    return;
+  }
+
+  const saved = localStorage.getItem('hermes-panel-w');
+  if(!saved) return;
+  const parsed = parseInt(saved, 10);
+  if(Number.isNaN(parsed) || parsed <= 0) return;
+  panel.style.width = `${parsed}px`;
 }
 
 function _workspacePanelEls(){
@@ -177,9 +193,16 @@ function mobileSwitchPanel(name){
 }
 
 $('btnSend').onclick=()=>{
+  if(typeof handleComposerPrimaryAction==='function') return handleComposerPrimaryAction();
   if(window._micActive){
     window._micPendingSend=true;
     _stopMic();
+    return;
+  }
+  // Turn-based voice mode: let the voice mode system handle the send flow
+  if(typeof window._voiceModeActive==='function'&&window._voiceModeActive()){
+    // Immediately send whatever is in the textarea
+    if(typeof window._voiceModeImmediateSend==='function') window._voiceModeImmediateSend();
     return;
   }
   send();
@@ -386,11 +409,304 @@ $('btnAttach').onclick=()=>$('fileInput').click();
 })();
 window._micActive=window._micActive||false;
 window._micPendingSend=window._micPendingSend||false;
+
+// ── Turn-based voice mode (#1333) ────────────────────────────────────────
+// Chained flow: listen → send → (agent processes) → TTS response → listen again
+(function(){
+  const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
+  const hasSTT=!(!SpeechRecognition);
+  const hasTTS=!!('speechSynthesis' in window);
+
+  // Need both STT and TTS for turn-based voice mode
+  if(!hasSTT||!hasTTS) return;
+
+  const modeBtn=$('btnVoiceMode');
+  const bar=$('voiceModeBar');
+  const indicator=$('voiceModeIndicator');
+  const label=$('voiceModeLabel');
+  const micBtn=$('btnMic');
+  const ta=$('msg');
+
+  if(!modeBtn||!bar||!indicator||!label) return;
+
+  // Show the voice mode button — browser supports both STT and TTS
+  modeBtn.style.display='';
+
+  let _voiceModeActive=false;
+  let _voiceModeState='idle'; // idle | listening | thinking | speaking
+  let _recognition=null;
+  let _silenceTimer=null;
+  // Capture the session id at thinking-time so the TTS callback won't read
+  // a different session's last assistant reply if the user navigated away
+  // between send and stream completion. (Opus pre-release advisor.)
+  let _voiceModeThinkingSid=null;
+  const SILENCE_MS=1800; // auto-send after 1.8s silence
+
+  function _setState(state){
+    _voiceModeState=state;
+    indicator.className='voice-mode-indicator '+state;
+    label.textContent=state==='listening'?t('voice_listening')
+      :state==='speaking'?t('voice_speaking')
+      :state==='thinking'?t('voice_thinking')
+      :'';
+    bar.style.display=_voiceModeActive?(state==='idle'?'none':''):'none';
+  }
+
+  function _startListening(){
+    if(!_voiceModeActive) return;
+    _setState('listening');
+
+    _recognition=new SpeechRecognition();
+    _recognition.continuous=false;
+    _recognition.interimResults=true;
+    _recognition.lang=(typeof _locale!=='undefined'&&_locale._speech)||'en-US';
+
+    let _finalText='';
+
+    _recognition.onstart=()=>{ _finalText=''; };
+
+    _recognition.onresult=(event)=>{
+      // Reset silence timer on any result
+      clearTimeout(_silenceTimer);
+      let interim='';
+      let final=_finalText;
+      for(let i=event.resultIndex;i<event.results.length;i++){
+        const txt=event.results[i][0].transcript;
+        if(event.results[i].isFinal){ final+=txt; _finalText=final; }
+        else{ interim+=txt; }
+      }
+      ta.value=final||interim;
+      autoResize();
+
+      // Auto-send on silence after final result
+      if(_finalText){
+        _silenceTimer=setTimeout(()=>{
+          _voiceModeSend();
+        },SILENCE_MS);
+      }
+    };
+
+    _recognition.onend=()=>{
+      clearTimeout(_silenceTimer);
+      // If we have text and haven't sent yet, send it
+      if(_finalText&&_voiceModeActive&&_voiceModeState==='listening'){
+        _voiceModeSend();
+      } else if(_voiceModeActive&&_voiceModeState==='listening'){
+        // No speech detected — restart listening
+        setTimeout(()=>{ if(_voiceModeActive) _startListening(); },500);
+      }
+    };
+
+    _recognition.onerror=(event)=>{
+      clearTimeout(_silenceTimer);
+      if(event.error==='no-speech'||event.error==='aborted'){
+        // Restart if still active
+        if(_voiceModeActive){
+          setTimeout(()=>{ if(_voiceModeActive) _startListening(); },800);
+        }
+        return;
+      }
+      if(event.error==='not-allowed'||event.error==='service-not-allowed'||event.error==='audio-capture'){
+        _deactivate();
+        showToast(t('mic_denied'));
+        return;
+      }
+      // Other errors — try to restart
+      if(_voiceModeActive){
+        setTimeout(()=>{ if(_voiceModeActive) _startListening(); },1500);
+      }
+    };
+
+    try{ _recognition.start(); }catch(e){
+      // Already started or other error — retry shortly
+      setTimeout(()=>{ if(_voiceModeActive) _startListening(); },1000);
+    }
+  }
+
+  function _voiceModeSend(){
+    if(!_voiceModeActive) return;
+    const text=(ta.value||'').trim();
+    if(!text){
+      ta.value='';
+      setTimeout(()=>{ if(_voiceModeActive) _startListening(); },300);
+      return;
+    }
+    _setState('thinking');
+    // Pin the active session id so the TTS callback won't speak a different
+    // session's reply if the user navigates away mid-stream.
+    _voiceModeThinkingSid=(typeof S!=='undefined'&&S.session)?S.session.session_id:null;
+    try{ if(_recognition) _recognition.abort(); }catch(_){}
+    _recognition=null;
+    // send() is global from boot.js
+    if(typeof send==='function') send();
+  }
+
+  function _speakResponse(){
+    if(!_voiceModeActive) return;
+    // Bail out if the user navigated to a different session between send and
+    // stream completion. The patched autoReadLastAssistant fires globally;
+    // without this guard it would TTS-read the wrong session's last assistant
+    // message. Drop back to listening on the new session instead.
+    const currentSid=(typeof S!=='undefined'&&S.session)?S.session.session_id:null;
+    if(_voiceModeThinkingSid && currentSid && currentSid!==_voiceModeThinkingSid){
+      _voiceModeThinkingSid=null;
+      _startListening();
+      return;
+    }
+    _voiceModeThinkingSid=null;
+    _setState('speaking');
+
+    // Find last assistant message
+    const rows=document.querySelectorAll('.msg-row[data-role="assistant"], .assistant-segment[data-raw-text]');
+    if(!rows.length){ _startListening(); return; }
+    const last=rows[rows.length-1];
+    const rawText=last.dataset.rawText||'';
+    if(!rawText.trim()){ _startListening(); return; }
+
+    // Strip for TTS (reuse existing helper if available)
+    let clean=rawText;
+    if(typeof _stripForTTS==='function') clean=_stripForTTS(rawText);
+    else{
+      // Basic strip: remove code blocks, images, links
+      clean=clean.replace(/```[\s\S]*?```/g,' code block ')
+        .replace(/`([^`]*)`/g,'$1')
+        .replace(/!\[([^\]]*)\]\([^)]*\)/g,'$1')
+        .replace(/\[([^\]]*)\]\([^)]*\)/g,'$1')
+        .replace(/#{1,6}\s/g,'')
+        .replace(/[*_~]+/g,'')
+        .replace(/\n{2,}/g,'. ')
+        .replace(/\n/g,' ')
+        .trim();
+    }
+    if(!clean){ _startListening(); return; }
+
+    const utter=new SpeechSynthesisUtterance(clean);
+
+    // Apply saved voice preferences
+    const savedVoice=localStorage.getItem('hermes-tts-voice');
+    const voices=speechSynthesis.getVoices();
+    if(savedVoice&&voices.length){
+      const match=voices.find(v=>v.name===savedVoice);
+      if(match) utter.voice=match;
+    }
+    const savedRate=parseFloat(localStorage.getItem('hermes-tts-rate'));
+    if(!isNaN(savedRate)) utter.rate=Math.min(2,Math.max(0.5,savedRate));
+    const savedPitch=parseFloat(localStorage.getItem('hermes-tts-pitch'));
+    if(!isNaN(savedPitch)) utter.pitch=Math.min(2,Math.max(0,savedPitch));
+
+    utter.onend=()=>{
+      // After speaking, go back to listening
+      if(_voiceModeActive) setTimeout(()=>_startListening(),500);
+    };
+    utter.onerror=()=>{
+      if(_voiceModeActive) setTimeout(()=>_startListening(),1000);
+    };
+
+    speechSynthesis.speak(utter);
+  }
+
+  // Hook into response completion — observe when the agent finishes
+  // We patch setComposerStatus to detect when a response completes
+  const _origSetComposerStatus=(typeof setComposerStatus==='function')?setComposerStatus.bind(window):null;
+
+  window._voiceModeOnResponseComplete=function(){
+    if(_voiceModeActive&&_voiceModeState==='thinking'){
+      // Small delay to let DOM render the final message
+      setTimeout(()=>{
+        if(_voiceModeActive&&_voiceModeState==='thinking'){
+          _speakResponse();
+        }
+      },400);
+    }
+  };
+
+  // Observe S.busy changes to detect response completion
+  // The existing code calls setBusy(false) when response completes
+  const _origSetBusy=(typeof setBusy==='function')?setBusy.bind(window):null;
+  if(_origSetBusy){
+    // We use a MutationObserver-style approach via polling S.busy
+    // Actually, we'll use a simpler approach: hook into the message stream completion
+  }
+
+  // Most reliable hook: use the existing autoReadLastAssistant call site.
+  // We override autoReadLastAssistant so that if voice mode is active, we use our
+  // own speak-and-resume flow instead of the default auto-read.
+  const _origAutoRead=(typeof autoReadLastAssistant==='function')?autoReadLastAssistant:null;
+  window.autoReadLastAssistant=function(){
+    if(_voiceModeActive&&_voiceModeState==='thinking'){
+      _speakResponse();
+      return;
+    }
+    if(_origAutoRead) _origAutoRead.apply(this,arguments);
+  };
+
+  function _activate(){
+    _voiceModeActive=true;
+    modeBtn.classList.add('active');
+    modeBtn.title=t('voice_mode_active');
+    showToast(t('voice_mode_active'),1500);
+    // If the agent is busy, wait — state will be 'thinking' and we'll detect completion
+    if(typeof S!=='undefined'&&S.busy){
+      _setState('thinking');
+      return;
+    }
+    // Cancel any existing TTS
+    if(typeof stopTTS==='function') stopTTS();
+    _startListening();
+  }
+
+  function _deactivate(){
+    _voiceModeActive=false;
+    _voiceModeState='idle';
+    _voiceModeThinkingSid=null;
+    modeBtn.classList.remove('active');
+    modeBtn.title=t('voice_toggle');
+    bar.style.display='none';
+    clearTimeout(_silenceTimer);
+    try{ if(_recognition) _recognition.abort(); }catch(_){}
+    _recognition=null;
+    if(typeof stopTTS==='function') stopTTS();
+    // Restore original autoReadLastAssistant
+    if(_origAutoRead) window.autoReadLastAssistant=_origAutoRead;
+    // Clear textarea if it was only voice input
+    ta.value='';
+    autoResize();
+  }
+
+  modeBtn.onclick=()=>{
+    if(_voiceModeActive){
+      _deactivate();
+      showToast(t('voice_mode_off'),1500);
+    }else{
+      _activate();
+    }
+  };
+
+  // Expose for external use
+  window._voiceModeActive=()=>_voiceModeActive;
+  window._voiceModeDeactivate=_deactivate;
+  window._voiceModeImmediateSend=_voiceModeSend;
+})();
 $('fileInput').onchange=e=>{addFiles(Array.from(e.target.files));e.target.value='';};
 $('btnNewChat').onclick=async()=>{
-  // If the current session has no messages, just focus the composer rather than
-  // creating another empty session that will clutter the sidebar list (#1171).
-  if(S.session&&(S.session.message_count||0)===0){$('msg').focus();closeMobileSidebar();return;}
+  // If the current session has no messages AND nothing is in flight, just focus
+  // the composer rather than creating another empty session that will clutter the
+  // sidebar list (#1171).
+  //
+  // The "nothing in flight" half is critical (#1432): if the user clicks + while
+  // their first message is still streaming (or queued), `message_count` is still 0
+  // server-side because the user turn hasn't been merged yet. The old guard treated
+  // that as "empty" and made + a no-op for the entire stream duration, so users
+  // couldn't actually start a parallel chat. Use the same in-flight signal as
+  // `_restoreSettledSession()` in messages.js: an active stream id or a queued
+  // pending user message means the session is real, not empty.
+  if(S.session
+     && (S.session.message_count||0)===0
+     && !S.busy
+     && !S.session.active_stream_id
+     && !S.session.pending_user_message){
+    $('msg').focus();closeMobileSidebar();return;
+  }
   await newSession();await renderSessionList();closeMobileSidebar();$('msg').focus();
 };
 $('btnDownload').onclick=()=>{
@@ -426,16 +742,18 @@ $('importFileInput').onchange=async(e)=>{
 };
 // btnRefreshFiles is now panel-icon-btn in header (see HTML)
 function clearPreview(){
+  // Restore directory breadcrumb after closing file preview
+  if(typeof renderBreadcrumb==='function') renderBreadcrumb();
   const closePanelAfter=_workspacePanelMode==='preview';
   const pa=$('previewArea');if(pa)pa.classList.remove('visible');
   const pi=$('previewImg');if(pi){pi.onerror=null;pi.src='';}
+  const pdf=$('previewPdfFrame');if(pdf)pdf.src='';
+  const html=$('previewHtmlIframe');if(html)html.src='';
   const pm=$('previewMd');if(pm)pm.innerHTML='';
   const pc=$('previewCode');if(pc)pc.textContent='';
   const pp=$('previewPathText');if(pp)pp.textContent='';
   const ft=$('fileTree');if(ft)ft.style.display='';
   _previewCurrentPath='';_previewCurrentMode='';_previewDirty=false;
-  // Restore directory breadcrumb after closing file preview
-  if(typeof renderBreadcrumb==='function') renderBreadcrumb();
   if(closePanelAfter)closeWorkspacePanel();
   else syncWorkspacePanelUI();
 }
@@ -444,20 +762,30 @@ $('btnClearPreview').onclick=handleWorkspaceClose;
 $('modelSelect').onchange=async()=>{
   if(!S.session)return;
   const selectedModel=$('modelSelect').value;
+  const modelState=(typeof _modelStateForSelect==='function')
+    ? _modelStateForSelect($('modelSelect'),selectedModel)
+    : {model:selectedModel,model_provider:null};
   if(typeof closeModelDropdown==='function') closeModelDropdown();
-  localStorage.setItem('hermes-webui-model', selectedModel);
-  await api('/api/session/update',{method:'POST',body:JSON.stringify({session_id:S.session.session_id,workspace:S.session.workspace,model:selectedModel})});
-  S.session.model=selectedModel;
+  if(typeof _writePersistedModelState==='function') _writePersistedModelState(modelState.model,modelState.model_provider);
+  else localStorage.setItem('hermes-webui-model', modelState.model);
+  await api('/api/session/update',{method:'POST',body:JSON.stringify({
+    session_id:S.session.session_id,
+    workspace:S.session.workspace,
+    model:modelState.model,
+    model_provider:modelState.model_provider||null,
+  })});
+  S.session.model=modelState.model;
+  S.session.model_provider=modelState.model_provider||null;
   if(typeof syncModelChip==='function') syncModelChip();
   syncTopbar();
+  // Clarify scope: composer model changes are session-local, not the global default.
+  if(typeof showToast==='function'){
+    showToast(t('model_scope_toast')||'Applies to this conversation from your next message.', 3000);
+  }
   // Warn if selected model belongs to a different provider than what Hermes is configured for
   if(typeof _checkProviderMismatch==='function'){
     const warn=_checkProviderMismatch(selectedModel);
     if(warn&&typeof showToast==='function') showToast(warn,4000);
-  }
-  // Notify user that model changes only take effect in the next conversation (#419)
-  if(S.messages && S.messages.length > 0 && typeof showToast==='function'){
-    showToast('Model change takes effect in your next conversation', 3000);
   }
 };
 $('msg').addEventListener('input',()=>{
@@ -480,6 +808,18 @@ $('msg').addEventListener('input',()=>{
     hideCmdDropdown();
   }
 });
+// Track IME composition for East Asian input. Safari fires the committing
+// keydown AFTER compositionend with isComposing=false, so we also keep a
+// manual flag and reset it on the next tick to swallow that trailing Enter.
+// Also reset on blur so the flag can never get stuck in a true state if
+// compositionend never fires (focus loss with some IME implementations).
+let _imeComposing=false;
+(()=>{const _c=$('msg');if(!_c)return;
+  _c.addEventListener('compositionstart',()=>{_imeComposing=true;});
+  _c.addEventListener('compositionend',()=>{setTimeout(()=>{_imeComposing=false;},0);});
+  _c.addEventListener('blur',()=>{_imeComposing=false;});
+})();
+function _isImeEnter(e){return e.isComposing||e.keyCode===229||_imeComposing;}
 $('msg').addEventListener('keydown',e=>{
   // Autocomplete navigation when dropdown is open
   const dd=$('cmdDropdown');
@@ -490,7 +830,7 @@ $('msg').addEventListener('keydown',e=>{
     if(e.key==='Tab'){e.preventDefault();selectCmdDropdownItem();return;}
     if(e.key==='Escape'){e.preventDefault();hideCmdDropdown();return;}
     if(e.key==='Enter'&&!e.shiftKey){
-      if(e.isComposing){return;}
+      if(_isImeEnter(e)){return;}
       e.preventDefault();
       selectCmdDropdownItem();
       return;
@@ -502,7 +842,7 @@ $('msg').addEventListener('keydown',e=>{
   // The 'ctrl+enter' setting also uses this behavior (Enter = newline).
   // Users can override in Settings by explicitly choosing 'enter' mode.
   if(e.key==='Enter'){
-    if(e.isComposing){return;}
+    if(_isImeEnter(e)){return;}
     const _mobileDefault=matchMedia('(pointer:coarse)').matches&&window._sendKey==='enter';
     if(window._sendKey==='ctrl+enter'||_mobileDefault){
       if(e.ctrlKey||e.metaKey){e.preventDefault();send();}
@@ -529,8 +869,23 @@ document.addEventListener('keydown',async e=>{
   // behaviour, and the palette's first entry is "New conversation".
   if((e.metaKey||e.ctrlKey)&&e.shiftKey&&e.key.toLowerCase()==='n'){
     e.preventDefault();
-    if(S.session&&(S.session.message_count||0)===0){$('msg').focus();return;}
-    if(!S.busy){await newSession();await renderSessionList();closeMobileSidebar();$('msg').focus();}
+    // If the current session has no messages AND nothing is in flight, just focus
+    // the composer rather than creating another empty session that will clutter
+    // the sidebar list (#1171). See the matching guard in $('btnNewChat').onclick
+    // and bug #1432 for why the in-flight check is needed.
+    if(S.session
+       && (S.session.message_count||0)===0
+       && !S.busy
+       && !S.session.active_stream_id
+       && !S.session.pending_user_message){
+      $('msg').focus();return;
+    }
+    // Cmd/Ctrl+K should always create a new conversation, even while the current
+    // one is still streaming. The old !S.busy guard meant users had to wait for
+    // a long generation to finish before they could start something new — exactly
+    // the moment they want to switch context. newSession() leaves the in-flight
+    // stream running on its own session; the user just gets a fresh blank one.
+    await newSession();await renderSessionList();closeMobileSidebar();$('msg').focus();
   }
   if(e.key==='Escape'){
     // Close onboarding overlay if open (skip/dismiss the wizard)
@@ -572,6 +927,7 @@ document.querySelectorAll('.suggestion').forEach(btn=>{
 });
 
 window.addEventListener('resize',()=>{
+  _syncWorkspacePanelInlineWidth();
   syncWorkspacePanelState();
 });
 
@@ -586,8 +942,12 @@ window.addEventListener('resize',()=>{
     if(!handle || !targetEl) return;
 
     // Restore saved width
-    const saved = localStorage.getItem(storageKey);
-    if(saved) targetEl.style.width = saved + 'px';
+    if(storageKey === 'hermes-panel-w'){
+      _syncWorkspacePanelInlineWidth();
+    }else{
+      const saved = localStorage.getItem(storageKey);
+      if(saved) targetEl.style.width = saved + 'px';
+    }
 
     let startX=0, startW=0;
 
@@ -625,6 +985,11 @@ window.addEventListener('resize',()=>{
 })();
 
 // ── Appearance helpers (theme = light/dark/system, skin = accent color) ──────
+const _THEMES=[
+  {name:'Light', value:'light', colors:['#FEFCF7','#FAF7F0','#B8860B']},
+  {name:'Dark', value:'dark', colors:['#0D0D1A','#141425','#FFD700']},
+  {name:'System', value:'system', colors:['#FEFCF7','#0D0D1A','#B8860B']},
+];
 const _SKINS=[
   {name:'Default',  colors:['#FFD700','#FFBF00','#CD7F32']},
   {name:'Ares',     colors:['#FF4444','#CC3333','#992222']},
@@ -633,8 +998,9 @@ const _SKINS=[
   {name:'Poseidon', colors:['#0EA5E9','#0284C7','#0369A1']},
   {name:'Sisyphus', colors:['#A78BFA','#8B5CF6','#7C3AED']},
   {name:'Charizard',colors:['#FB923C','#F97316','#EA580C']},
+  {name:'Sienna',   colors:['#D97757','#C06A49','#9A523A']},
 ];
-const _VALID_THEMES=new Set(['system','dark','light']);
+const _VALID_THEMES=new Set((_THEMES||[]).map(t=>t.value));
 const _VALID_SKINS=new Set((_SKINS||[]).map(s=>s.name.toLowerCase()));
 const _LEGACY_THEME_MAP={
   slate:{theme:'dark',skin:'slate'},
@@ -669,6 +1035,7 @@ function _setResolvedTheme(isDark){
 
 function _applyTheme(name){
   const normalized=_normalizeAppearance(name,'default');
+  delete document.documentElement.dataset.theme;
   if(_systemThemeMq&&_onSystemThemeChange){
     _systemThemeMq.removeEventListener('change',_onSystemThemeChange);
     _systemThemeMq=null;
@@ -699,11 +1066,11 @@ function _pickTheme(name){
   _applySkin(appearance.skin);
   _syncThemePicker(appearance.theme);
   _syncSkinPicker(appearance.skin);
-  if(typeof _markSettingsDirty==='function') _markSettingsDirty();
   const hidden=$('settingsTheme');
   if(hidden) hidden.value=appearance.theme;
   const skinHidden=$('settingsSkin');
   if(skinHidden) skinHidden.value=appearance.skin;
+  if(typeof _scheduleAppearanceAutosave==='function') _scheduleAppearanceAutosave();
 }
 
 function _pickSkin(name){
@@ -714,11 +1081,11 @@ function _pickSkin(name){
   _applySkin(appearance.skin);
   _syncThemePicker(appearance.theme);
   _syncSkinPicker(appearance.skin);
-  if(typeof _markSettingsDirty==='function') _markSettingsDirty();
   const hidden=$('settingsSkin');
   if(hidden) hidden.value=appearance.skin;
   const themeHidden=$('settingsTheme');
   if(themeHidden) themeHidden.value=appearance.theme;
+  if(typeof _scheduleAppearanceAutosave==='function') _scheduleAppearanceAutosave();
 }
 
 function _syncThemePicker(active){
@@ -749,9 +1116,9 @@ function _pickFontSize(size){
   localStorage.setItem('hermes-font-size',size);
   _applyFontSize(size);
   _syncFontSizePicker(size);
-  if(typeof _markSettingsDirty==='function') _markSettingsDirty();
   const hidden=$('settingsFontSize');
   if(hidden) hidden.value=size;
+  if(typeof _scheduleAppearanceAutosave==='function') _scheduleAppearanceAutosave();
 }
 
 function _syncFontSizePicker(active){
@@ -814,6 +1181,7 @@ function applyBotName(){
     window._soundEnabled=!!s.sound_enabled;
     window._notificationsEnabled=!!s.notifications_enabled;
     window._showThinking=s.show_thinking!==false;
+    window._simplifiedToolCalling=s.simplified_tool_calling!==false;
     window._sidebarDensity=(s.sidebar_density==='detailed'?'detailed':'compact');
     window._busyInputMode=(s.busy_input_mode||'queue');
     window._botName=s.bot_name||'Hermes';
@@ -826,6 +1194,9 @@ function applyBotName(){
     _applyTheme(appearance.theme);
     localStorage.setItem('hermes-skin',appearance.skin);
     _applySkin(appearance.skin);
+    const fontSize=(s.font_size||localStorage.getItem('hermes-font-size')||'default');
+    localStorage.setItem('hermes-font-size',fontSize);
+    _applyFontSize(fontSize);
     if(typeof setLocale==='function'){
       const _lang=typeof resolvePreferredLocale==='function'
         ? resolvePreferredLocale(s.language, localStorage.getItem('hermes-lang'))
@@ -834,6 +1205,8 @@ function applyBotName(){
       if(typeof applyLocaleToDOM==='function')applyLocaleToDOM();
     }
     applyBotName();
+    // TTS: apply enabled state on boot so buttons show/hide correctly (#499)
+    if(typeof _applyTtsEnabled==='function') _applyTtsEnabled(localStorage.getItem('hermes-tts-enabled')==='true');
   }catch(e){
     window._sendKey='enter';
     window._showTokenUsage=false;
@@ -841,6 +1214,7 @@ function applyBotName(){
     window._soundEnabled=false;
     window._notificationsEnabled=false;
     window._showThinking=true;
+    window._simplifiedToolCalling=true;
     window._sidebarDensity='compact';
     window._busyInputMode='queue';
     window._botName='Hermes';
@@ -853,6 +1227,7 @@ function applyBotName(){
       if(typeof applyLocaleToDOM==='function')applyLocaleToDOM();
     }
     applyBotName();
+    if(typeof _applyTtsEnabled==='function') _applyTtsEnabled(localStorage.getItem('hermes-tts-enabled')==='true');
   }
   // Non-blocking update check (fire-and-forget, once per tab session)
   // ?test_updates=1 in URL forces banner display for testing (bypasses sessionStorage guards)
@@ -870,19 +1245,31 @@ function applyBotName(){
   // options are enough for first paint; the dynamic provider list can settle
   // after the saved session is visible.
   const _modelDropdownReady=populateModelDropdown().then(()=>{
-    const savedModel=localStorage.getItem('hermes-webui-model');
+    const savedState=(typeof _readPersistedModelState==='function')
+      ? _readPersistedModelState()
+      : (localStorage.getItem('hermes-webui-model')?{model:localStorage.getItem('hermes-webui-model'),model_provider:null}:null);
+    const savedModel=savedState&&savedState.model;
     if(savedModel && $('modelSelect')){
-      $('modelSelect').value=savedModel;
+      const applied=(typeof _applyModelToDropdown==='function')
+        ? _applyModelToDropdown(savedModel,$('modelSelect'),savedState.model_provider||null)
+        : null;
+      if(!applied) $('modelSelect').value=savedModel;
       // If the value didn't take (model not in list), clear the bad pref
-      if($('modelSelect').value!==savedModel) localStorage.removeItem('hermes-webui-model');
+      if(!applied&&$('modelSelect').value!==savedModel){
+        if(typeof _clearPersistedModelState==='function') _clearPersistedModelState();
+        else localStorage.removeItem('hermes-webui-model');
+      }
       else if(typeof syncModelChip==='function') syncModelChip();
     }
     if(S.session) syncTopbar();
   }).catch(()=>{});
   window._modelDropdownReady=_modelDropdownReady;
-  // Pre-load workspace list so sidebar name is correct from first render
+  // Pre-load workspace list so sidebar name is correct from first render.
+  // Render the session list before restoring the saved conversation so a stale
+  // saved-session/client-side boot error cannot leave the sidebar empty forever.
   await loadWorkspaceList();
   await loadOnboardingWizard();
+  await renderSessionList();
   _initResizePanels();
   // Workspace panel restore happens AFTER loadSession so we know if
   // the session has a workspace — prevents the snap-open-then-closed flash (#576).
@@ -893,7 +1280,8 @@ function applyBotName(){
   const _srch = document.getElementById('sessionSearch'); if (_srch) _srch.value = '';
   // Initialize reasoning chip on boot (fixes #1103 — chip hidden until session load)
   if(typeof fetchReasoningChip==='function') fetchReasoningChip();
-  const saved=localStorage.getItem('hermes-webui-session');
+  const urlSession=(typeof _sessionIdFromLocation==='function')?_sessionIdFromLocation():null;
+  const saved=urlSession||localStorage.getItem('hermes-webui-session');
   if(saved){
     try{
       await loadSession(saved);
@@ -942,7 +1330,14 @@ function applyBotName(){
   await renderSessionList();
   // Start real-time gateway session sync if setting is enabled
   if(typeof startGatewaySSE==='function') startGatewaySSE();
-})();
+})().catch(e=>{
+  console.error('[hermes] boot failed', e);
+  try{S._bootReady=true;}catch(_){}
+  try{syncTopbar();}catch(_){}
+  try{syncWorkspacePanelState();}catch(_){}
+  try{$('emptyState').style.display='';}catch(_){}
+  try{if(typeof renderSessionList==='function') void renderSessionList();}catch(_){}
+});
 
 // Fix #822 (bfcache path): when the browser restores the page from the
 // back-forward cache, the async boot IIFE above does NOT re-run, but the

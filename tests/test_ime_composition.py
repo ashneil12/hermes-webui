@@ -9,10 +9,21 @@ SESSIONS_JS = (REPO_ROOT / "static" / "sessions.js").read_text(encoding="utf-8")
 
 
 def _ime_guarded_enter_pattern(event_var_pattern, require_no_shift=False):
+    """Accept both the original `e.isComposing` guard AND the broader
+    `_isImeEnter(e)` helper introduced in PR #1441 (which folds in
+    `keyCode===229` and a manual `_imeComposing` flag for Safari).
+    """
     no_shift = rf"\s*&&\s*!\s*{event_var_pattern}\.shiftKey" if require_no_shift else ""
+    # Either: if(e.isComposing) ...  OR  if(_isImeEnter(e)) ...
+    guard = (
+        rf"if\s*\(\s*"
+        rf"(?:{event_var_pattern}\.isComposing"
+        rf"|_isImeEnter\(\s*{event_var_pattern}\s*\))"
+        rf"\s*\)\s*"
+    )
     return (
         rf"if\s*\(\s*{event_var_pattern}\.key\s*===\s*'Enter'{no_shift}\s*\)\s*\{{\s*"
-        rf"if\s*\(\s*{event_var_pattern}\.isComposing\s*\)\s*"
+        + guard +
         rf"(?:\{{\s*return\s*;?\s*\}}|return\s*;?)"
     )
 

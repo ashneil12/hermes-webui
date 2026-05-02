@@ -458,6 +458,19 @@ MIME_MAP = {
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".doc": "application/msword",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/opus",
+    ".flac": "audio/flac",
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".m4v": "video/mp4",
+    ".webm": "video/webm",
+    ".ogv": "video/ogg",
 }
 
 # ── Toolsets (from config.yaml or hardcoded default) ─────────────────────────
@@ -500,6 +513,7 @@ _FALLBACK_MODELS = [
     {"provider": "OpenAI",    "id": "openai/gpt-5.4-mini",                "label": "GPT-5.4 Mini"},
     {"provider": "OpenAI",    "id": "openai/gpt-5.4",                     "label": "GPT-5.4"},
     # Anthropic — 4.6 flagship + 4.5 generation
+    {"provider": "Anthropic", "id": "anthropic/claude-opus-4.7",          "label": "Claude Opus 4.7"},
     {"provider": "Anthropic", "id": "anthropic/claude-opus-4.6",          "label": "Claude Opus 4.6"},
     {"provider": "Anthropic", "id": "anthropic/claude-sonnet-4.6",        "label": "Claude Sonnet 4.6"},
     {"provider": "Anthropic", "id": "anthropic/claude-sonnet-4-5",        "label": "Claude Sonnet 4.5"},
@@ -511,8 +525,10 @@ _FALLBACK_MODELS = [
     {"provider": "Google",    "id": "google/gemini-2.5-pro",                    "label": "Gemini 2.5 Pro"},
     {"provider": "Google",    "id": "google/gemini-2.5-flash",                  "label": "Gemini 2.5 Flash"},
     # DeepSeek
-    {"provider": "DeepSeek",  "id": "deepseek/deepseek-chat-v3-0324",     "label": "DeepSeek V3"},
-    {"provider": "DeepSeek",  "id": "deepseek/deepseek-r1",               "label": "DeepSeek R1"},
+    {"provider": "DeepSeek",  "id": "deepseek/deepseek-v4-flash",          "label": "DeepSeek V4 Flash"},
+    {"provider": "DeepSeek",  "id": "deepseek/deepseek-v4-pro",            "label": "DeepSeek V4 Pro"},
+    {"provider": "DeepSeek",  "id": "deepseek/deepseek-chat-v3-0324",      "label": "DeepSeek V3 (legacy)"},
+    {"provider": "DeepSeek",  "id": "deepseek/deepseek-r1",                "label": "DeepSeek R1 (legacy)"},
     # Qwen (Alibaba) — strong coding and general models
     {"provider": "Qwen",      "id": "qwen/qwen3-coder",                   "label": "Qwen3 Coder"},
     {"provider": "Qwen",      "id": "qwen/qwen3.6-plus",                  "label": "Qwen3.6 Plus"},
@@ -523,6 +539,13 @@ _FALLBACK_MODELS = [
     # MiniMax
     {"provider": "MiniMax",   "id": "minimax/MiniMax-M2.7",             "label": "MiniMax M2.7"},
     {"provider": "MiniMax",   "id": "minimax/MiniMax-M2.7-highspeed",   "label": "MiniMax M2.7 Highspeed"},
+    # Z.AI / GLM
+    {"provider": "Z.AI",      "id": "zai/glm-5.1",                      "label": "GLM-5.1"},
+    {"provider": "Z.AI",      "id": "zai/glm-5",                        "label": "GLM-5"},
+    {"provider": "Z.AI",      "id": "zai/glm-5-turbo",                  "label": "GLM-5 Turbo"},
+    {"provider": "Z.AI",      "id": "zai/glm-4.7",                      "label": "GLM-4.7"},
+    {"provider": "Z.AI",      "id": "zai/glm-4.5",                      "label": "GLM-4.5"},
+    {"provider": "Z.AI",      "id": "zai/glm-4.5-flash",                "label": "GLM-4.5 Flash"},
 ]
 
 # Provider display names for known Hermes provider IDs
@@ -542,6 +565,7 @@ _PROVIDER_DISPLAY = {
     "kimi-coding": "Kimi / Moonshot",
     "deepseek": "DeepSeek",
     "minimax": "MiniMax",
+    "minimax-cn": "MiniMax (China)",
     "google": "Google",
     "meta-llama": "Meta Llama",
     "huggingface": "HuggingFace",
@@ -555,6 +579,7 @@ _PROVIDER_DISPLAY = {
     "qwen": "Qwen",
     "xiaomi": "Xiaomi MiMo",
     "x-ai": "xAI",
+    "nvidia": "NVIDIA NIM",
 }
 
 # Provider alias → canonical slug.  Users configure providers using the
@@ -589,6 +614,8 @@ _PROVIDER_ALIASES = {
     "crofai": "crof",
     "crof-ai": "crof",
     "deep-seek": "deepseek",
+    "minimax-china": "minimax-cn",
+    "minimax_cn": "minimax-cn",
     "opencode": "opencode-zen",
     "grok": "xai",
     "x-ai": "xai",
@@ -601,6 +628,16 @@ _PROVIDER_ALIASES = {
     "aliyun": "alibaba",
     "dashscope": "alibaba",
     "alibaba-cloud": "alibaba",
+    "nim": "nvidia",
+    "nvidia-nim": "nvidia",
+    "build-nvidia": "nvidia",
+    "nemotron": "nvidia",
+    # Legacy alias — earlier WebUI builds wrote ``provider: local`` for unknown
+    # loopback endpoints, but ``local`` is not registered in
+    # ``hermes_cli.auth.PROVIDER_REGISTRY``. Routing it through ``custom``
+    # lets the agent's auxiliary client take the ``no-key-required``
+    # OpenAI-compat path. See #1384.
+    "local": "custom",
 }
 
 
@@ -629,6 +666,7 @@ def _resolve_provider_alias(name: str) -> str:
 # Well-known models per provider (used to populate dropdown for direct API providers)
 _PROVIDER_MODELS = {
     "anthropic": [
+        {"id": "claude-opus-4.7", "label": "Claude Opus 4.7"},
         {"id": "claude-opus-4.6", "label": "Claude Opus 4.6"},
         {"id": "claude-sonnet-4.6", "label": "Claude Sonnet 4.6"},
         {"id": "claude-sonnet-4-5", "label": "Claude Sonnet 4.5"},
@@ -757,8 +795,10 @@ _PROVIDER_MODELS = {
         {"id": "gemini-2.5-flash",                  "label": "Gemini 2.5 Flash"},
     ],
     "deepseek": [
-        {"id": "deepseek-chat-v3-0324", "label": "DeepSeek V3"},
-        {"id": "deepseek-reasoner", "label": "DeepSeek Reasoner"},
+        {"id": "deepseek-v4-flash", "label": "DeepSeek V4 Flash"},
+        {"id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro"},
+        {"id": "deepseek-chat-v3-0324", "label": "DeepSeek V3 (legacy)"},
+        {"id": "deepseek-reasoner", "label": "DeepSeek Reasoner (legacy)"},
     ],
     "nous": [
         {"id": "@nous:anthropic/claude-opus-4.6",     "label": "Claude Opus 4.6 (via Nous)"},
@@ -788,6 +828,12 @@ _PROVIDER_MODELS = {
         {"id": "MiniMax-M2.5-highspeed", "label": "MiniMax M2.5 Highspeed"},
         {"id": "MiniMax-M2.1", "label": "MiniMax M2.1"},
     ],
+    "minimax-cn": [
+        {"id": "MiniMax-M2.7", "label": "MiniMax M2.7"},
+        {"id": "MiniMax-M2.5", "label": "MiniMax M2.5"},
+        {"id": "MiniMax-M2.1", "label": "MiniMax M2.1"},
+        {"id": "MiniMax-M2", "label": "MiniMax M2"},
+    ],
     # GitHub Copilot — model IDs served via the Copilot API
     "copilot": [
         {"id": "gpt-5.5", "label": "GPT-5.5"},
@@ -816,6 +862,7 @@ _PROVIDER_MODELS = {
         {"id": "gpt-5", "label": "GPT-5"},
         {"id": "gpt-5-codex", "label": "GPT-5 Codex"},
         {"id": "gpt-5-nano", "label": "GPT-5 Nano"},
+        {"id": "claude-opus-4-7", "label": "Claude Opus 4.7"},
         {"id": "claude-opus-4-6", "label": "Claude Opus 4.6"},
         {"id": "claude-opus-4-5", "label": "Claude Opus 4.5"},
         {"id": "claude-opus-4-1", "label": "Claude Opus 4.1"},
@@ -839,13 +886,20 @@ _PROVIDER_MODELS = {
     ],
     # OpenCode Go — flat-rate models via opencode.ai/go ($10/month)
     "opencode-go": [
-        {"id": "glm-5.1", "label": "GLM-5.1"},
-        {"id": "glm-5", "label": "GLM-5"},
-        {"id": "kimi-k2.5", "label": "Kimi K2.5"},
-        {"id": "mimo-v2-pro", "label": "MiMo V2 Pro"},
-        {"id": "mimo-v2-omni", "label": "MiMo V2 Omni"},
-        {"id": "minimax-m2.7", "label": "MiniMax M2.7"},
-        {"id": "minimax-m2.5", "label": "MiniMax M2.5"},
+        {"id": "glm-5.1",          "label": "GLM-5.1"},
+        {"id": "glm-5",            "label": "GLM-5"},
+        {"id": "kimi-k2.5",        "label": "Kimi K2.5"},
+        {"id": "kimi-k2.6",        "label": "Kimi K2.6"},
+        {"id": "deepseek-v4-pro",  "label": "DeepSeek V4 Pro"},
+        {"id": "deepseek-v4-flash","label": "DeepSeek V4 Flash"},
+        {"id": "mimo-v2-pro",      "label": "MiMo V2 Pro"},
+        {"id": "mimo-v2-omni",     "label": "MiMo V2 Omni"},
+        {"id": "mimo-v2.5-pro",    "label": "MiMo V2.5 Pro"},
+        {"id": "mimo-v2.5",        "label": "MiMo V2.5"},
+        {"id": "minimax-m2.7",     "label": "MiniMax M2.7"},
+        {"id": "minimax-m2.5",     "label": "MiniMax M2.5"},
+        {"id": "qwen3.6-plus",     "label": "Qwen3.6 Plus"},
+        {"id": "qwen3.5-plus",     "label": "Qwen3.5 Plus"},
     ],
     # 'gemini' is the hermes_cli provider ID for Google AI Studio
     # Model IDs are bare — sent directly to:
@@ -880,6 +934,13 @@ _PROVIDER_MODELS = {
         {"id": "mimo-v2-pro", "label": "MiMo V2 Pro"},
         {"id": "mimo-v2-flash", "label": "MiMo V2 Flash"},
         {"id": "mimo-v2-omni", "label": "MiMo V2 Omni"},
+    ],
+    # NVIDIA NIM — NVIDIA's inference platform
+    "nvidia": [
+        {"id": "nvidia/nemotron-3-super-120b-a12b", "label": "Nemotron 3 Super 120B"},
+        {"id": "nvidia/nemotron-3-nano-30b-a3b", "label": "Nemotron 3 Nano 30B"},
+        {"id": "nvidia/llama-3.3-nemotron-super-49b-v1.5", "label": "Llama 3.3 Nemotron Super 49B"},
+        {"id": "qwen/qwen3-next-80b-a3b-instruct", "label": "Qwen3 Next 80B"},
     ],
     # xAI — prefix used in OpenRouter model IDs (x-ai/grok-4-20)
     "x-ai": [
@@ -961,6 +1022,72 @@ def _apply_provider_prefix(
     return result
 
 
+def _deduplicate_model_ids(groups: list[dict]) -> None:
+    """Ensure every model ID across groups is globally unique.
+
+    When multiple providers expose the same model ID (either bare names like
+    ``gpt-5.4`` or slash-qualified IDs like ``google/gemma-4-27b``), the
+    dropdown cannot distinguish them. This post-process detects such
+    collisions and prefixes colliding entries with ``@provider_id:`` so the
+    frontend can treat them as distinct options.
+
+    The first occurrence (in provider-id order) is left unchanged for backward
+    compatibility with sessions that already store the original bare/slash
+    model name. If that provider is later removed from the config, the next
+    cache rebuild re-runs dedup — the remaining provider becomes the sole
+    occurrence and is left unchanged, so the session still matches.
+
+    .. note::
+       The "first occurrence wins" rule means the unchanged ID is not stable
+       across config changes (adding, removing, or reordering providers).
+       This is acceptable because the dedup runs on every cache rebuild,
+       so sessions always resolve to the current canonical unchanged ID.
+
+    The ``@provider_id:model`` format is consistent with the existing
+    ``_apply_provider_prefix()`` function and is handled by
+    ``resolve_model_provider()`` (rsplits on the last ``:`` to handle
+    provider_ids that themselves contain ``:``).
+
+    Operates in-place on *groups*.
+    """
+    if not groups:
+        return
+
+    # Collect {model_id: [(group_idx, model_idx), ...]} in alphabetical
+    # provider_id order so that the "first occurrence stays unchanged" rule is
+    # deterministic across config edits (adding/removing/reordering providers).
+    sorted_group_indices = sorted(
+        range(len(groups)),
+        key=lambda i: groups[i].get("provider_id", ""),
+    )
+    id_map: dict[str, list[tuple[int, int]]] = {}
+    for gi in sorted_group_indices:
+        group = groups[gi]
+        for mi, model in enumerate(group.get("models", [])):
+            mid = str(model.get("id", "") or "").strip()
+            # Skip IDs that are already provider-qualified.
+            if not mid or mid.startswith("@"):
+                continue
+            id_map.setdefault(mid, []).append((gi, mi))
+
+    # For any ID appearing in 2+ groups, prefix all but the first occurrence.
+    # This handles N>2 providers correctly: the loop iterates over all
+    # occurrences after the first, prefixing each with its own provider_id.
+    for original_id, locations in id_map.items():
+        if len(locations) < 2:
+            continue
+        for gi, mi in locations[1:]:
+            group = groups[gi]
+            model = group["models"][mi]
+            pid = group.get("provider_id", "")
+            model["id"] = f"@{pid}:{original_id}"
+            provider_name = group.get("provider", pid)
+            if model.get("label") != original_id:
+                model["label"] = f"{model['label']} ({provider_name})"
+            else:
+                model["label"] = f"{original_id} ({provider_name})"
+
+
 def resolve_model_provider(model_id: str) -> tuple:
     """Resolve model name, provider, and base_url for AIAgent.
 
@@ -989,6 +1116,16 @@ def resolve_model_provider(model_id: str) -> tuple:
         config_provider = model_cfg.get("provider")
         config_base_url = model_cfg.get("base_url")
 
+    # Heal legacy ``provider: local`` entries (written by WebUI < v0.50.252)
+    # at read time. ``local`` is not a registered provider, so passing it
+    # downstream raises a ``LOCAL_API_KEY`` error from the auxiliary client
+    # mid-conversation when compression/vision/web-extract fires. Route
+    # through ``custom`` instead — it takes the ``no-key-required``
+    # OpenAI-compat path that local servers (Ollama, LM Studio, llama.cpp,
+    # vLLM, TabbyAPI) actually use. See #1384.
+    if isinstance(config_provider, str) and config_provider.strip().lower() == "local":
+        config_provider = "custom"
+
     model_id = (model_id or "").strip()
     if not model_id:
         return model_id, config_provider, config_base_url
@@ -1010,8 +1147,15 @@ def resolve_model_provider(model_id: str) -> tuple:
     # @provider:model format — explicit provider hint from the dropdown.
     # Route through that provider directly (resolve_runtime_provider will
     # resolve credentials in streaming.py).
+    # Use rsplit to handle provider_ids that contain ':' (e.g. custom:my-key).
+    # With rsplit, "@custom:my-key:model" → provider="custom:my-key", model="model".
     if model_id.startswith("@") and ":" in model_id:
-        provider_hint, bare_model = model_id[1:].split(":", 1)
+        # rsplit handles provider_ids containing ':' (e.g. @custom:my-key:model
+        # → provider="custom:my-key", model="model") — upstream addition.
+        # Then the alias + compat-base-url lookup is the local fork's
+        # OpenAI-compat routing (crof/venice/bankr/cometapi/groq) so a
+        # bare provider name still resolves to the right /v1 endpoint.
+        provider_hint, bare_model = model_id[1:].rsplit(":", 1)
         provider_hint = _resolve_provider_alias(provider_hint)
         compat_base_url = _OPENAI_COMPAT_PROVIDER_BASE_URLS.get(provider_hint)
         if compat_base_url:
@@ -1033,9 +1177,25 @@ def resolve_model_provider(model_id: str) -> tuple:
         # Nous user whose config.yaml also has a base_url doesn't accidentally
         # fall into the prefix-stripping path (#894: minimax/minimax-m2.7 → bare
         # name sent to Nous → 404 because Nous requires the full namespace path).
-        _PORTAL_PROVIDERS = {"nous", "opencode-zen", "opencode-go"}
+        # NVIDIA NIM also serves models from multiple namespaces (qwen, nvidia, etc.)
+        # and requires the full model path.
+        _PORTAL_PROVIDERS = {"nous", "opencode-zen", "opencode-go", "nvidia"}
         if config_provider in _PORTAL_PROVIDERS:
             return model_id, config_provider, config_base_url
+        # The OpenAI Codex provider uses a real base_url, but its default
+        # ChatGPT endpoint cannot serve OpenRouter-style provider/model IDs.
+        # Keep that narrow exception before the custom endpoint protection so
+        # selecting openai/gpt-5.5 from OpenRouter under active Codex still
+        # routes through OpenRouter. Other base_url-backed real providers may be
+        # custom/proxy endpoints, so they must fall through to the branch below.
+        if (
+            config_provider == "openai-codex"
+            and str(config_base_url or "").strip().rstrip("/")
+            == "https://chatgpt.com/backend-api/codex"
+            and prefix in _PROVIDER_MODELS
+            and prefix != config_provider
+        ):
+            return model_id, "openrouter", None
         # If a custom endpoint base_url is configured, don't reroute through OpenRouter
         # just because the model name contains a slash (e.g. google/gemma-4-26b-a4b).
         # The user has explicitly pointed at a base_url, so trust their routing config.
@@ -1063,6 +1223,42 @@ def resolve_model_provider(model_id: str) -> tuple:
         return model_id, "custom", compat_base_url
 
     return model_id, config_provider, config_base_url
+
+
+def model_with_provider_context(model_id: str, model_provider: str | None = None) -> str:
+    """Return the model string to pass to ``resolve_model_provider()``.
+
+    Session persistence keeps the user's selected provider in ``model_provider``
+    instead of forcing every selected model into ``@provider:model`` form. At
+    runtime, however, ``resolve_model_provider()`` still understands that
+    internal disambiguation form, so use it only when the provider context is
+    needed to route away from the current default provider.
+    """
+    model = str(model_id or "").strip()
+    provider = str(model_provider or "").strip().lower()
+    if not model or not provider or provider == "default" or model.startswith("@"):
+        return model
+
+    model_cfg = cfg.get("model", {})
+    config_provider = None
+    if isinstance(model_cfg, dict):
+        config_provider = str(model_cfg.get("provider") or "").strip().lower()
+
+    # If the selected provider is already the configured provider, leaving the
+    # model bare preserves provider-specific base_url/proxy settings.
+    if provider == config_provider:
+        return model
+
+    # OpenRouter selections with slash IDs are explicit provider/model paths.
+    if provider == "openrouter":
+        return f"@{provider}:{model}"
+
+    # For non-OpenRouter slash IDs, keep the ID intact so existing custom/proxy
+    # base_url routing and portal-provider handling remain in charge.
+    if "/" in model:
+        return model
+
+    return f"@{provider}:{model}"
 
 
 def get_effective_default_model(config_data: dict | None = None) -> str:
@@ -1233,6 +1429,13 @@ def set_hermes_default_model(model_id: str) -> dict:
         # matcher — see `static/panels.js` (#895).
         persisted_model = str(resolved_model or selected_model).strip()
         persisted_provider = str(resolved_provider or previous_provider or "").strip()
+        # Never persist the bogus ``local`` value — see #1384. The auto-detect
+        # block in ``_build_available_models_uncached`` was rewriting unknown
+        # loopback hosts to ``provider: "local"``, which is not registered and
+        # broke compression/vision mid-conversation. Route through ``custom``
+        # so the agent's auxiliary client uses the ``no-key-required`` path.
+        if persisted_provider.lower() == "local":
+            persisted_provider = "custom"
 
         model_cfg["default"] = persisted_model
         if persisted_provider:
@@ -1293,15 +1496,31 @@ def _delete_models_cache_on_disk() -> None:
         pass  # already absent
 
 
+def _is_valid_models_cache(cache: object) -> bool:
+    """Return True when a disk cache payload has the full /api/models shape."""
+    if not isinstance(cache, dict):
+        return False
+    if not {"active_provider", "default_model", "configured_model_badges", "groups"}.issubset(cache):
+        return False
+    active_provider = cache.get("active_provider")
+    return (
+        (active_provider is None or isinstance(active_provider, str))
+        and isinstance(cache.get("default_model"), str)
+        and isinstance(cache.get("configured_model_badges"), dict)
+        and isinstance(cache.get("groups"), list)
+    )
+
+
 def _load_models_cache_from_disk() -> dict | None:
-    """Load groups dict from disk cache if it exists and is valid."""
+    """Load /api/models cache from disk if it exists and has current metadata."""
     try:
         import json as _j
+
         if not _models_cache_path.exists():
             return None
         with open(_models_cache_path, encoding="utf-8") as f:
             cache = _j.load(f)
-        return cache if isinstance(cache, dict) and "groups" in cache else None
+        return cache if _is_valid_models_cache(cache) else None
     except Exception:
         return None
 
@@ -1309,13 +1528,37 @@ def _load_models_cache_from_disk() -> dict | None:
 def _save_models_cache_to_disk(cache: dict) -> None:
     """Save cache to disk so it survives server restarts."""
     try:
-        import time as _cache_time
+        if not _is_valid_models_cache(cache):
+            return
         tmp = str(_models_cache_path) + f".{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"groups": cache.get("groups", [])}, f, indent=2)
+            json.dump(
+                {
+                    "active_provider": cache["active_provider"],
+                    "default_model": cache["default_model"],
+                    "configured_model_badges": cache["configured_model_badges"],
+                    "groups": cache["groups"],
+                },
+                f,
+                indent=2,
+            )
         os.rename(tmp, str(_models_cache_path))
     except Exception:
         pass  # Non-fatal -- cache will rebuild on next call
+
+
+def _get_fresh_memory_models_cache(now: float) -> dict | None:
+    """Return a valid fresh in-memory /api/models cache, or clear stale shapes."""
+    global _available_models_cache, _available_models_cache_ts
+    if _available_models_cache is None:
+        return None
+    if (now - _available_models_cache_ts) >= _AVAILABLE_MODELS_CACHE_TTL:
+        return None
+    if _is_valid_models_cache(_available_models_cache):
+        return copy.deepcopy(_available_models_cache)
+    _available_models_cache = None
+    _available_models_cache_ts = 0.0
+    return None
 
 
 def invalidate_models_cache():
@@ -1438,6 +1681,98 @@ def get_available_models() -> dict:
         active_provider = None
         default_model = get_effective_default_model(cfg)
         groups = []
+
+        def _norm_model_id(model_id: str) -> str:
+            s = str(model_id or "").strip().lower()
+            if s.startswith("@") and ":" in s:
+                s = s.split(":", 1)[1]
+            if "/" in s:
+                s = s.split("/", 1)[1]
+            return s.replace("-", ".")
+
+        def _build_configured_model_badges() -> dict[str, dict[str, str]]:
+            configured_entries: list[dict[str, str]] = []
+            if active_provider and default_model:
+                configured_entries.append(
+                    {
+                        "provider": active_provider,
+                        "model": default_model,
+                        "role": "primary",
+                        "label": "Primary",
+                    }
+                )
+            fallback_cfg = cfg.get("fallback_providers", [])
+            if isinstance(fallback_cfg, list):
+                for idx, entry in enumerate(fallback_cfg, start=1):
+                    if not isinstance(entry, dict):
+                        continue
+                    provider = _resolve_provider_alias(entry.get("provider"))
+                    model = str(entry.get("model") or "").strip()
+                    if not provider or not model:
+                        continue
+                    configured_entries.append(
+                        {
+                            "provider": provider,
+                            "model": model,
+                            "role": "fallback",
+                            "label": f"Fallback {idx}",
+                        }
+                    )
+
+            option_ids = [m.get("id", "") for g in groups for m in g.get("models", []) if m.get("id")]
+            option_lookup = {str(opt_id): str(opt_id) for opt_id in option_ids}
+            option_provider_lookup = {
+                str(m.get("id")): str(g.get("provider_id") or "")
+                for g in groups
+                for m in g.get("models", [])
+                if m.get("id")
+            }
+            norm_lookup: dict[str, list[str]] = {}
+            for opt_id in option_ids:
+                norm_lookup.setdefault(_norm_model_id(opt_id), []).append(opt_id)
+
+            badges: dict[str, dict[str, str]] = {}
+            for entry in configured_entries:
+                provider = entry["provider"]
+                model = entry["model"]
+                raw_candidates = []
+                for candidate in (
+                    model,
+                    f"{provider}/{model}",
+                    f"@{provider}:{model}",
+                ):
+                    if candidate and candidate not in raw_candidates:
+                        raw_candidates.append(candidate)
+
+                match_id = None
+                exact_match = next((option_lookup[c] for c in raw_candidates if c in option_lookup), None)
+                for candidate in raw_candidates:
+                    if candidate in option_lookup and option_provider_lookup.get(candidate) == provider:
+                        match_id = option_lookup[candidate]
+                        break
+                if match_id is None:
+                    for candidate in raw_candidates:
+                        normalized = _norm_model_id(candidate)
+                        matches = norm_lookup.get(normalized, [])
+                        if not matches:
+                            continue
+                        provider_match = next(
+                            (m for m in matches if option_provider_lookup.get(m) == provider),
+                            None,
+                        )
+                        match_id = provider_match or exact_match or matches[0]
+                        if match_id:
+                            break
+
+                badge_payload = {"role": entry["role"], "label": entry["label"], "provider": provider}
+                for candidate in raw_candidates:
+                    candidate_provider = option_provider_lookup.get(candidate)
+                    if candidate_provider and candidate_provider != provider:
+                        continue
+                    badges[candidate] = badge_payload
+                if match_id:
+                    badges[match_id] = badge_payload
+            return badges
 
         # 1. Read config.yaml model section
         cfg_base_url = ""  # must be defined before conditional blocks (#117)
@@ -1615,8 +1950,10 @@ def get_available_models() -> dict:
                 detected_providers.add("zai")
             if all_env.get("KIMI_API_KEY"):
                 detected_providers.add("kimi-coding")
-            if all_env.get("MINIMAX_API_KEY") or all_env.get("MINIMAX_CN_API_KEY"):
+            if all_env.get("MINIMAX_API_KEY"):
                 detected_providers.add("minimax")
+            if all_env.get("MINIMAX_CN_API_KEY"):
+                detected_providers.add("minimax-cn")
             if all_env.get("DEEPSEEK_API_KEY"):
                 detected_providers.add("deepseek")
             if all_env.get("XAI_API_KEY"):
@@ -1670,7 +2007,16 @@ def get_available_models() -> dict:
                             elif "lmstudio" in host or "lm-studio" in host:
                                 provider = "lmstudio"
                             else:
-                                provider = "local"
+                                # Unknown loopback/private endpoint: route through
+                                # the generic ``custom`` provider so the agent's
+                                # auxiliary client (compression, vision, web
+                                # extraction) takes the OpenAI-compat custom path
+                                # with ``no-key-required`` semantics. Writing
+                                # ``provider: local`` here used to break
+                                # compression mid-conversation because ``local``
+                                # is not a registered provider in
+                                # ``hermes_cli.auth.PROVIDER_REGISTRY`` — see #1384.
+                                provider = "custom"
                     except ValueError:
                         pass
 
@@ -1708,6 +2054,11 @@ def get_available_models() -> dict:
                 # Build set of hostnames from custom_providers config — these are
                 # user-explicitly configured endpoints and should not be blocked by SSRF.
                 _ssrf_trusted_hosts: set[str] = set()
+                # Also trust the base_url from model config (explicitly configured by user)
+                if cfg_base_url:
+                    _base_parsed = urlparse(cfg_base_url if "://" in cfg_base_url else f"http://{cfg_base_url}")
+                    if _base_parsed.hostname:
+                        _ssrf_trusted_hosts.add(_base_parsed.hostname.lower())
                 _custom_providers_cfg = cfg.get("custom_providers", [])
                 if isinstance(_custom_providers_cfg, list):
                     for _cp in _custom_providers_cfg:
@@ -1804,8 +2155,11 @@ def get_available_models() -> dict:
                             if _slug not in _named_custom_groups:
                                 _named_custom_groups[_slug] = (_cp_name, [])
                             detected_providers.add(_slug)
+                            _cp_option_id = _cp_model
+                            if active_provider != _slug and not _cp_option_id.startswith("@"):
+                                _cp_option_id = f"@{_slug}:{_cp_option_id}"
                             _named_custom_groups[_slug][1].append(
-                                {"id": _cp_model, "label": _cp_label}
+                                {"id": _cp_option_id, "label": _cp_label}
                             )
                         else:
                             auto_detected_models.append({"id": _cp_model, "label": _cp_label})
@@ -1824,6 +2178,19 @@ def get_available_models() -> dict:
             )
             if not _has_unnamed:
                 detected_providers.discard("custom")
+
+        # Filter providers if providers.only_configured is set
+        providers_cfg = cfg.get("providers", {})
+        only_show_configured = providers_cfg.get("only_configured", False) if isinstance(providers_cfg, dict) else False
+        if only_show_configured:
+            configured_providers = set()
+            if active_provider:
+                configured_providers.add(active_provider)
+            cfg_providers = cfg.get("providers", {})
+            if isinstance(cfg_providers, dict):
+                configured_providers.update(cfg_providers.keys())
+            # Only show providers that are both detected and configured
+            detected_providers = detected_providers.intersection(configured_providers)
 
         # 5. Build model groups
         if detected_providers:
@@ -1925,9 +2292,15 @@ def get_available_models() -> dict:
                         }
                     )
 
+        # Post-process: ensure model IDs are globally unique across groups.
+        # When multiple providers expose the same bare model ID, prefix
+        # collisions with @provider_id: so the frontend can distinguish them.
+        _deduplicate_model_ids(groups)
+
         return {
             "active_provider": active_provider,
             "default_model": default_model,
+            "configured_model_badges": _build_configured_model_badges(),
             "groups": groups,
         }
 
@@ -1960,19 +2333,22 @@ def get_available_models() -> dict:
                 lambda: not _cache_build_in_progress and _available_models_cache is not None,
                 timeout=60
             )
-            if _available_models_cache is not None and (time.monotonic() - _available_models_cache_ts) < _AVAILABLE_MODELS_CACHE_TTL:
-                return copy.deepcopy(_available_models_cache)
+            cached = _get_fresh_memory_models_cache(time.monotonic())
+            if cached is not None:
+                return cached
 
         # Reload config if changed
         if _cfg_changed:
             reload_config()
             _available_models_cache = None
             _available_models_cache_ts = 0.0
+            disk_groups = None
 
         # Serve from memory cache if fresh
         now = time.monotonic()
-        if _available_models_cache is not None and (now - _available_models_cache_ts) < _AVAILABLE_MODELS_CACHE_TTL:
-            return copy.deepcopy(_available_models_cache)
+        cached = _get_fresh_memory_models_cache(now)
+        if cached is not None:
+            return cached
 
         # Cold path: disk cache hit — use it (fast, no lock contention)
         if disk_groups is not None:
@@ -2013,12 +2389,19 @@ STREAMS_LOCK = threading.Lock()
 CANCEL_FLAGS: dict = {}
 AGENT_INSTANCES: dict = {}  # stream_id -> AIAgent instance for interrupt propagation
 STREAM_PARTIAL_TEXT: dict = {}  # stream_id -> partial assistant text accumulated during streaming
+STREAM_REASONING_TEXT: dict = {}  # stream_id -> reasoning trace accumulated during streaming (#1361 §A)
+STREAM_LIVE_TOOL_CALLS: dict = {}  # stream_id -> live tool calls accumulated during streaming (#1361 §B)
 SERVER_START_TIME = time.time()
 
 # Agent cache: reuse AIAgent across messages in the same WebUI session so that
 # _user_turn_count survives between turns.  This mirrors the gateway's
 # _agent_cache pattern and is required for injectionFrequency: "first-turn".
-SESSION_AGENT_CACHE: dict = {}   # session_id -> (AIAgent, config_sig)
+# LRU cache with size limit to prevent memory bloat.
+# All cache operations (get, set, move_to_end, popitem) are protected by
+# SESSION_AGENT_CACHE_LOCK for thread safety in multi-threaded ASGI servers.
+import collections
+SESSION_AGENT_CACHE: collections.OrderedDict = collections.OrderedDict()  # LRU cache
+SESSION_AGENT_CACHE_MAX = 50  # Maximum cached agents (each holds full conversation history)
 SESSION_AGENT_CACHE_LOCK = threading.Lock()
 
 
@@ -2082,6 +2465,7 @@ _SETTINGS_DEFAULTS = {
     "check_for_updates": True,  # check if webui/agent repos are behind upstream
     "theme": "dark",  # light | dark | system
     "skin": "default",  # accent color skin: default | ares | mono | slate | poseidon | sisyphus | charizard
+    "font_size": "default",  # small | default | large
     "language": "en",  # UI locale code; must match a key in static/i18n.js LOCALES
     "bot_name": os.getenv(
         "HERMES_WEBUI_BOT_NAME", "Hermes"
@@ -2089,6 +2473,8 @@ _SETTINGS_DEFAULTS = {
     "sound_enabled": False,  # play notification sound when assistant finishes
     "notifications_enabled": False,  # browser notification when tab is in background
     "show_thinking": True,  # show/hide thinking/reasoning blocks in chat view
+    "simplified_tool_calling": True,  # group tools/thinking into one quiet activity disclosure
+    "api_redact_enabled": True,  # redact sensitive data (API keys, secrets) from API responses
     "sidebar_density": "compact",  # compact | detailed
     "auto_title_refresh_every": "0",  # adaptive title refresh: 0=off, 5/10/20=every N exchanges
     "busy_input_mode": "queue",  # behavior when sending while agent is running: queue | interrupt | steer
@@ -2192,6 +2578,7 @@ _SETTINGS_ALLOWED_KEYS = set(_SETTINGS_DEFAULTS.keys()) - {
 _SETTINGS_ENUM_VALUES = {
     "send_key": {"enter", "ctrl+enter"},
     "sidebar_density": {"compact", "detailed"},
+    "font_size": {"small", "default", "large"},
     "auto_title_refresh_every": {"0", "5", "10", "20"},
     "busy_input_mode": {"queue", "interrupt", "steer"},
 }
@@ -2204,6 +2591,8 @@ _SETTINGS_BOOL_KEYS = {
     "sound_enabled",
     "notifications_enabled",
     "show_thinking",
+    "simplified_tool_calling",
+    "api_redact_enabled",
 }
 # Language codes are validated as short alphanumeric BCP-47-like tags (e.g. 'en', 'zh', 'fr')
 _SETTINGS_LANG_RE = __import__("re").compile(r"^[a-zA-Z]{2,10}(-[a-zA-Z0-9]{2,8})?$")

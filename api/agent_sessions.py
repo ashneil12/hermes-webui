@@ -6,6 +6,66 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+MESSAGING_SOURCES = {
+    'discord',
+    'slack',
+    'telegram',
+    'weixin',
+}
+
+SOURCE_LABELS = {
+    'api_server': 'API',
+    'cli': 'CLI',
+    'cron': 'Cron',
+    'discord': 'Discord',
+    'slack': 'Slack',
+    'telegram': 'Telegram',
+    'tool': 'Tool',
+    'webui': 'WebUI',
+    'weixin': 'Weixin',
+}
+
+
+def normalize_agent_session_source(raw_source: str | None) -> dict:
+    """Return stable source metadata for Hermes Agent session rows.
+
+    ``sessions.source`` is an Agent-level raw value. WebUI needs a smaller,
+    durable contract so routes, SSE snapshots, and future sidebar policies do
+    not each reimplement raw-source checks.
+    """
+    raw = str(raw_source or '').strip().lower() or 'unknown'
+
+    if raw == 'webui':
+        session_source = 'webui'
+    elif raw == 'cli':
+        session_source = 'cli'
+    elif raw in MESSAGING_SOURCES:
+        session_source = 'messaging'
+    elif raw == 'cron':
+        session_source = 'cron'
+    elif raw == 'tool':
+        session_source = 'tool'
+    elif raw == 'api_server':
+        session_source = 'api'
+    else:
+        session_source = 'other'
+
+    label = SOURCE_LABELS.get(raw)
+    if not label:
+        label = raw.replace('_', ' ').title() if raw != 'unknown' else 'Agent'
+
+    return {
+        'raw_source': None if raw == 'unknown' else raw,
+        'session_source': session_source,
+        'source_label': label,
+    }
+
+
+def _with_normalized_source(row: dict) -> dict:
+    normalized = normalize_agent_session_source(row.get('source'))
+    return {**row, **normalized}
+
+
 def _optional_col(name: str, columns: set[str], fallback: str = "NULL") -> str:
     return f"s.{name}" if name in columns else f"{fallback} AS {name}"
 
@@ -191,6 +251,124 @@ def read_importable_agent_session_rows(
             params,
         )
         projected = _project_agent_session_rows([dict(row) for row in cur.fetchall()])
+        projected = [_with_normalized_source(row) for row in projected]
         if limit is None:
             return projected
         return projected[:max(0, int(limit))]
+
+
+
+def read_session_lineage_metadata(db_path: Path, session_ids: list[str] | set[str]) -> dict[str, dict]:
+    """Return compression-lineage metadata for known WebUI sidebar sessions.
+
+    WebUI sessions are persisted as JSON files, but Hermes Agent also mirrors
+    them into ``state.db.sessions`` for insights/session history. Compression
+    and cross-surface continuation create parent chains there. ``/api/sessions``
+    needs to surface that lineage to the sidebar so client-side collapse can
+    group logical continuations without mutating or deleting any session files.
+
+    Missing DBs, old schemas, or incomplete rows degrade to an empty mapping.
+    """
+    wanted = {str(sid) for sid in (session_ids or []) if sid}
+    db_path = Path(db_path)
+    if not wanted or not db_path.exists():
+        return {}
+
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(sessions)")
+            session_cols = {row[1] for row in cur.fetchall()}
+            if 'parent_session_id' not in session_cols or 'end_reason' not in session_cols:
+                return {}
+            # Scoped fetch via PRIMARY KEY + idx_sessions_parent rather than a
+            # full table scan. The sessions table grows unbounded over time
+            # (1000+ rows is normal, 10000+ for power users), and this function
+            # runs on every sidebar refresh — a full SELECT was ~50x slower
+            # than the indexed lookup at 1000 rows and scales linearly.
+            #
+            # Fetch the wanted ids first, then chase parent_session_id chains
+            # in batches until no new ids appear. Each batch hits PRIMARY KEY
+            # so it's effectively O(N) lookups.
+            #
+            # IN-clause is chunked to 500 to stay under SQLITE_MAX_VARIABLE_NUMBER
+            # on older sqlite (Python 3.9 ships sqlite 3.31 which defaults to 999;
+            # newer Python ships sqlite 3.32+ at 32766). On a power user with
+            # 2000+ sessions in the sidebar, an unchunked first hop would raise
+            # `OperationalError: too many SQL variables`, get swallowed by the
+            # except below, and silently disable lineage collapse forever.
+            # (Opus pre-release review of v0.50.251, SHOULD-FIX 2.)
+            IN_CHUNK = 500
+            rows: dict[str, dict] = {}
+            to_fetch = set(wanted)
+            # Cap walk depth to bound worst-case query count. Real lineage
+            # chains seen in production are <10 segments; anything longer is
+            # almost certainly pathological data and not worth chasing.
+            for _hop in range(20):
+                if not to_fetch:
+                    break
+                fetch_list = list(to_fetch)
+                to_fetch = set()
+                for i in range(0, len(fetch_list), IN_CHUNK):
+                    chunk = fetch_list[i:i + IN_CHUNK]
+                    placeholders = ','.join('?' * len(chunk))
+                    cur.execute(
+                        f"SELECT id, parent_session_id, end_reason FROM sessions WHERE id IN ({placeholders})",
+                        chunk,
+                    )
+                    for row in cur.fetchall():
+                        rows[row['id']] = dict(row)
+                # Queue up parents we haven't fetched yet.
+                for sid in fetch_list:
+                    parent_id = rows.get(sid, {}).get('parent_session_id')
+                    if parent_id and parent_id not in rows and parent_id not in to_fetch:
+                        to_fetch.add(parent_id)
+    except Exception:
+        return {}
+
+    metadata: dict[str, dict] = {}
+    for sid in wanted:
+        row = rows.get(sid)
+        if not row:
+            continue
+
+        parent_id = row.get('parent_session_id')
+        # Only expose parent_session_id when:
+        #   1) the parent actually exists in state.db (orphan refs would
+        #      otherwise leak through and the frontend would treat them as
+        #      sidebar grouping keys via #1358's _sessionLineageKey
+        #      fall-through)
+        #   2) the parent's end_reason is one of {compression, cli_close} —
+        #      i.e. only TRUE continuations. Without this, two distinct
+        #      WebUI sessions sharing a `user_stop` parent would get
+        #      collapsed into a single sidebar row by #1358's helper
+        #      (it groups by parent_session_id as the third-fallback key).
+        # (Opus pre-release review of v0.50.251, SHOULD-FIX 1.)
+        parent_row = rows.get(parent_id) if parent_id else None
+        if parent_row and parent_row.get('end_reason') in {'compression', 'cli_close'}:
+            metadata.setdefault(sid, {})['parent_session_id'] = parent_id
+
+        root_id = sid
+        current_id = sid
+        segment_count = 1
+        seen = {sid}
+        while True:
+            current = rows.get(current_id)
+            parent_id = current.get('parent_session_id') if current else None
+            parent = rows.get(parent_id) if parent_id else None
+            if not parent or parent_id in seen:
+                break
+            if parent.get('end_reason') not in {'compression', 'cli_close'}:
+                break
+            root_id = parent_id
+            current_id = parent_id
+            seen.add(parent_id)
+            segment_count += 1
+
+        if root_id != sid:
+            entry = metadata.setdefault(sid, {})
+            entry['_lineage_root_id'] = root_id
+            entry['_compression_segment_count'] = segment_count
+
+    return metadata

@@ -22,6 +22,7 @@ const SHELL_ASSETS = [
   './static/icons.js',
   './static/i18n.js',
   './static/workspace.js',
+  './static/terminal.js',
   './static/onboarding.js',
   './static/favicon.svg',
   './static/favicon-32.png',
@@ -63,11 +64,19 @@ self.addEventListener('fetch', (event) => {
   // Never intercept cross-origin requests
   if (url.origin !== self.location.origin) return;
 
-  // API and streaming endpoints — always go to network
+  // Never intercept the service worker script itself. Returning a cached sw.js
+  // prevents the browser from seeing a new cache version after local patches.
+  if (url.pathname.endsWith('/sw.js')) return;
+
+  // API and streaming endpoints — always go to network.
+  // The WebUI may be mounted under a subpath such as /hermes/, so API
+  // requests can look like /hermes/api/sessions rather than /api/sessions.
   if (
     url.pathname.startsWith('/api/') ||
+    url.pathname.includes('/api/') ||
     url.pathname.includes('/stream') ||
-    url.pathname.startsWith('/health')
+    url.pathname.startsWith('/health') ||
+    url.pathname.includes('/health')
   ) {
     return; // let browser handle normally
   }
