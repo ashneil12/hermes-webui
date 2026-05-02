@@ -708,7 +708,6 @@ from api.workspace import (
     _workspace_blocked_roots,
 )
 from api.upload import handle_upload, handle_upload_extract, handle_transcribe
-from api import shell as _shell
 from api.streaming import _sse, _run_agent_streaming, cancel_stream
 from api.providers import get_providers, set_provider_key, remove_provider_key
 from api.onboarding import (
@@ -1737,12 +1736,6 @@ def handle_get(handler, parsed) -> bool:
             {"name": get_active_profile_name(), "path": str(get_active_hermes_home())},
         )
 
-    # ── Terminal (PTY shell) ──
-    if parsed.path == "/api/shell/status":
-        return _shell.handle_status(handler)
-    if parsed.path == "/api/shell/stream":
-        return _shell.handle_stream(handler, parsed)
-
     # ── MCP Servers (GET) ──
     if parsed.path == "/api/mcp/servers":
         return _handle_mcp_servers_list(handler)
@@ -2681,16 +2674,6 @@ def handle_post(handler, parsed) -> bool:
         handler.end_headers()
         handler.wfile.write(json.dumps({"ok": True}).encode())
         return True
-
-    # ── Terminal (PTY shell) ──
-    if parsed.path == "/api/shell/new":
-        return _shell.handle_new(handler, body)
-    if parsed.path == "/api/shell/input":
-        return _shell.handle_input(handler, body)
-    if parsed.path == "/api/shell/resize":
-        return _shell.handle_resize(handler, body)
-    if parsed.path == "/api/shell/close":
-        return _shell.handle_close(handler, body)
 
     # ── Checkpoints / Rollback (POST) ──
     if parsed.path == "/api/rollback/restore":

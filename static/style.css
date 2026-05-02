@@ -2960,28 +2960,6 @@ main.main > .main-view:not([id="mainChat"]):not([id="mainSettings"]) .main-view-
   font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--text,#e6e6e6)}
 .sc-row span{margin-left:auto;color:var(--muted,#9aa0a6)}
 
-/* ─────────────────────────────────────────────────────────────────────────
-   Terminal panel
-───────────────────────────────────────────────────────────────────────── */
-.term-root{position:fixed;inset:0;z-index:9050;display:flex;align-items:center;justify-content:center}
-.term-backdrop{position:absolute;inset:0;background:rgba(0,0,0,0.55);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
-.term-modal{position:relative;width:min(960px,94vw);height:min(640px,84vh);display:flex;flex-direction:column;
-  background:#0a0e14;color:#dcdfe4;border:1px solid var(--border2,#2a2f38);border-radius:12px;
-  box-shadow:0 24px 80px rgba(0,0,0,0.55);overflow:hidden}
-.term-head{display:flex;align-items:center;gap:10px;padding:8px 12px;background:rgba(255,255,255,0.03);
-  border-bottom:1px solid var(--border2,#2a2f38);font-size:13px}
-.term-title{font-weight:600}
-.term-meta{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:#7d8590;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:50%}
-.term-spacer{flex:1}
-.term-btn{background:transparent;border:1px solid var(--border2,#2a2f38);color:#dcdfe4;
-  border-radius:6px;padding:3px 10px;font-size:12px;cursor:pointer}
-.term-btn:hover{background:rgba(255,255,255,0.06)}
-.term-btn-x{font-size:18px;line-height:1;padding:1px 8px}
-.term-host{flex:1;padding:8px 4px 4px 8px;overflow:hidden}
-.term-host .xterm{height:100%}
-.term-foot{font-size:10px;color:#566069;padding:0 12px 6px}
-
 /* ── PDF preview ─────────────────────────────────────────────────────────── */
 .pdf-preview-wrap{border:1px solid var(--border);border-radius:6px;overflow:hidden;margin:4px 0;background:var(--surface);}
 .pdf-preview-header{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:var(--surface-2);font-size:12px;font-weight:600;}

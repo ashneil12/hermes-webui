@@ -35,7 +35,7 @@ function _palBuildItems(){
   items.push({ id: 'a:new', label: 'New conversation', icon: 'plus', kind: 'Action',
     run: () => { if (has('createNewSession')) window.createNewSession(); else document.getElementById('btnNewChat')?.click(); }});
   items.push({ id: 'a:term', label: 'Open Terminal', icon: 'terminal', kind: 'Action',
-    run: () => { if (has('openTerminal')) window.openTerminal(); }});
+    run: () => { if (has('toggleComposerTerminal')) window.toggleComposerTerminal(true); }});
   items.push({ id: 'a:shortcuts', label: 'Show keyboard shortcuts', icon: 'eye', kind: 'Action',
     run: () => { if (has('showShortcutsOverlay')) window.showShortcutsOverlay(); }});
   items.push({ id: 'a:tts-toggle', label: (window.TTS && window.TTS.autoSpeak) ? 'Disable auto-speak' : 'Enable auto-speak', icon: 'play', kind: 'TTS',
