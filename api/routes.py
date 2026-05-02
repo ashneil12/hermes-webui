@@ -1292,6 +1292,23 @@ def handle_get(handler, parsed) -> bool:
                     _truncated_msgs = _all_msgs
             else:
                 _truncated_msgs = _all_msgs
+            # Resolve effective context_length with model-metadata fallback so
+            # older sessions (pre-#1318) that have context_length=0 persisted
+            # still render a meaningful indicator on load.  Mirrors the
+            # SSE-path fallback in api/streaming.py:2333-2342.  Fixes #1436.
+            _persisted_cl = getattr(s, "context_length", 0) or 0
+            if not _persisted_cl:
+                _model_for_lookup = (
+                    getattr(s, "model", "") or effective_model or ""
+                ).strip()
+                if _model_for_lookup:
+                    try:
+                        from agent.model_metadata import get_model_context_length as _get_cl
+                        _fb_cl = _get_cl(_model_for_lookup, "") or 0
+                        if _fb_cl:
+                            _persisted_cl = _fb_cl
+                    except Exception:
+                        pass
             raw = s.compact() | {
                 "messages": _truncated_msgs,
                 "tool_calls": getattr(s, "tool_calls", []) if load_messages else [],
@@ -1299,7 +1316,7 @@ def handle_get(handler, parsed) -> bool:
                 "pending_user_message": getattr(s, "pending_user_message", None),
                 "pending_attachments": getattr(s, "pending_attachments", []) if load_messages else [],
                 "pending_started_at": getattr(s, "pending_started_at", None),
-                "context_length": getattr(s, "context_length", 0) or 0,
+                "context_length": _persisted_cl,
                 "threshold_tokens": getattr(s, "threshold_tokens", 0) or 0,
                 "last_prompt_tokens": getattr(s, "last_prompt_tokens", 0) or 0,
             }

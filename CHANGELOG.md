@@ -1,5 +1,10 @@
 # Hermes Web UI -- Changelog
 
+## [v0.50.263] — 2026-05-02
+
+### Fixed
+- **Context-window indicator broken on older sessions ("100" / "890% used")** (#1436, fixes #1436) — `#1356` (closed Apr 30) fixed the same symptom on the **live SSE path** but didn't cover the **GET /api/session load path**, so any session that pre-dates `#1318` (when `context_length` was added to `Session`) returned `context_length=0` from `/api/session`. Combined with two cascading frontend fallbacks (`promptTok = last_prompt_tokens || input_tokens`, `ctxWindow = context_length || 128*1024`), the ring rendered "100" capped from 800-4000% and the tooltip showed "890% used (context exceeded), 1.2M / 131.1k tokens used" — a misleading prompt to compress that the user couldn't address. Empirically: 23 of 75 sessions on the dev server were broken before this fix. **Two-layer fix**: (1) backend `api/routes.py` now resolves `context_length` via `agent.model_metadata.get_model_context_length()` when the persisted value is 0, mirroring the SSE-path fallback in `api/streaming.py:2333-2342`. (2) frontend `static/ui.js:1269` no longer falls back to cumulative `input_tokens` when `last_prompt_tokens` is missing — that fallback divides cumulative input by the context window, producing nonsense percentages. Older sessions without last-prompt data now render "·" + "tokens used" (honest no-data) on the ring instead of a misleading >100% percentage. **10 regression tests** in `tests/test_issue1436_context_indicator_load_path.py` pin: persisted-value pass-through, zero-value fallback, fallback-receives-correct-model, empty-model-skips-fallback (avoids 256K default-for-unknown trap), exception-swallowed-on-import-failure, frontend-no-input_tokens-fallback, frontend-uses-last_prompt_tokens-only, no-data-branch-renders-dot, load-path-imports-the-helper, fix-comment-references-issue-number. Reported by @AvidFuturist. (`api/routes.py`, `static/ui.js`, `tests/test_issue1436_context_indicator_load_path.py`)
+
 ## [v0.50.262] — 2026-05-02
 
 ### Fixed

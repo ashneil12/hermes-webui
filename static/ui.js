@@ -1265,8 +1265,13 @@ function _syncCtxIndicator(usage){
   const wrap=$('ctxIndicatorWrap');
   const el=$('ctxIndicator');
   if(!el)return;
-  // Use input_tokens as fallback when last_prompt_tokens is not available
-  const promptTok=usage.last_prompt_tokens||usage.input_tokens||0;
+  // #1436: Use last_prompt_tokens only — NEVER fall back to cumulative
+  // input_tokens for the "context window % used" calculation.  input_tokens
+  // is summed across all turns, so dividing it by the context window gives a
+  // nonsense percentage (often >100%) on long sessions.  When we have no
+  // last-prompt data we render "·" + "tokens used" via the !hasPromptTok
+  // branch below — honest "no data" instead of misleading "890% used".
+  const promptTok=usage.last_prompt_tokens||0;
   const totalTok=(usage.input_tokens||0)+(usage.output_tokens||0);
   // Default context window to 128K when not provided by backend
   const DEFAULT_CTX=128*1024;
