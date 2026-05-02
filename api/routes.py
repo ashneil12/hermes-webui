@@ -4808,9 +4808,23 @@ def _handle_approval_respond(handler, body):
     # the first — and an out-of-order "once" could resolve a command the
     # user hadn't seen yet. Matching by id keeps user intent and worker
     # threads in lock-step.
-    resolve_gateway_approval(sid, choice, resolve_all=False,
-                             approval_id=approval_id or None)
-    return j(handler, {"ok": True, "choice": choice})
+    # resolve_gateway_approval returns the count of agent threads it
+    # unblocked. 0 means no agent thread was parked waiting — either the
+    # gateway TTL expired before the user clicked or the approval was
+    # already resolved by an earlier click. Tag the response with
+    # ``expired: true`` so the dashboard can tell the user to re-run the
+    # action instead of leaving the card stuck on "Sent" while the agent
+    # has long since moved on. We keep HTTP 200 here so existing
+    # inject_test-based regression suites (which only seed _pending, not
+    # _gateway_queues) keep passing — the dashboard branches on the
+    # ``expired`` flag rather than the status code.
+    resolved_count = resolve_gateway_approval(
+        sid, choice, resolve_all=False, approval_id=approval_id or None
+    )
+    payload = {"ok": True, "choice": choice, "resolved": resolved_count}
+    if resolved_count == 0:
+        payload["expired"] = True
+    return j(handler, payload)
 
 
 def _handle_clarify_respond(handler, body):
