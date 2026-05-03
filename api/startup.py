@@ -177,26 +177,42 @@ def seed_bundled_skills_on_startup() -> dict | None:
         print(f"[skills] seed skipped: no bundled skills dir at {bundled_dir}", flush=True)
         return None
 
-    # Stage blockchain optional skills (Bankr Solana + Base) into the
-    # bundle dir so the existing sync flow picks them up alongside the
-    # rest. Done as a one-shot copy: if the destination already exists we
-    # leave it alone so that any updates the user (or a later vanilla
-    # release) made are not clobbered. shutil.copytree refuses an existing
+    # Stage selected ``optional-skills/`` subdirs into the bundle so the
+    # existing sync flow picks them up alongside the rest. Each entry is
+    # a one-shot copy: if the destination already exists we leave it
+    # alone so any updates the user (or a later vanilla release) made
+    # are not clobbered. ``shutil.copytree`` refuses an existing
     # destination, which is exactly what we want here.
-    optional_blockchain = agent_dir / "optional-skills" / "blockchain"
-    if optional_blockchain.is_dir():
-        bundled_blockchain = bundled_dir / "blockchain"
-        if not bundled_blockchain.exists():
-            try:
-                import shutil
-                shutil.copytree(optional_blockchain, bundled_blockchain)
-                print(
-                    f"[skills] staged Bankr blockchain skills into {bundled_blockchain}",
-                    flush=True,
-                )
-            except OSError as e:
-                # Non-fatal — sync_skills will still pick up the rest
-                print(f"[!!] failed to stage blockchain optional skills: {e}", flush=True)
+    #
+    # What we stage and why:
+    #   - blockchain/  Nous-bundled Solana + Base skills.
+    #   - bankr/       BankrBot suite (~37 skills) vendored upstream so
+    #                  every agent ships with the Bankr stack pre-
+    #                  installed instead of routing through the dashboard
+    #                  catalog one skill at a time.
+    #
+    # NOT staged: the rest of optional-skills/ (research/, security/,
+    # email/, communication/, etc.) — those remain opt-in via the
+    # dashboard's catalog "Install" flow because we don't want to
+    # auto-install ~60 skills the user didn't ask for.
+    import shutil
+    for staged_name in ("blockchain", "bankr"):
+        src = agent_dir / "optional-skills" / staged_name
+        if not src.is_dir():
+            continue
+        dest = bundled_dir / staged_name
+        if dest.exists():
+            continue
+        try:
+            shutil.copytree(src, dest)
+            count = sum(1 for _ in dest.rglob("SKILL.md"))
+            print(
+                f"[skills] staged optional-skills/{staged_name} ({count} skills) into {dest}",
+                flush=True,
+            )
+        except OSError as e:
+            # Non-fatal — sync_skills will still pick up the rest
+            print(f"[!!] failed to stage optional-skills/{staged_name}: {e}", flush=True)
 
     # Point the upstream sync at the (now-augmented) bundle dir. The env
     # var is read by tools.skills_sync._get_bundled_dir, so we don't have

@@ -69,9 +69,14 @@ def test_seed_copies_bundled_and_blockchain_skills(tmp_path: Path, monkeypatch, 
     _make_skill(bundled / "devops" / "commit", "commit")
     _make_skill(bundled / "productivity" / "notion", "notion")
 
-    # Two optional blockchain skills (the Bankr suite shape)
+    # Two optional blockchain skills (Nous-bundled)
     _make_skill(optional_blockchain / "solana", "solana")
     _make_skill(optional_blockchain / "base", "base")
+
+    # And two BankrBot suite skills under the parallel `bankr/` dir.
+    optional_bankr = agent_dir / "optional-skills" / "bankr"
+    _make_skill(optional_bankr / "stakr", "stakr")
+    _make_skill(optional_bankr / "moltycash", "moltycash")
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("HERMES_WEBUI_AGENT_DIR", str(agent_dir))
@@ -133,11 +138,14 @@ def test_seed_copies_bundled_and_blockchain_skills(tmp_path: Path, monkeypatch, 
     # Sync was called with our fake
     assert result is not None
     assert len(sync_calls) == 1
-    assert result["total_bundled"] == 4  # 2 bundled + 2 blockchain (after staging)
+    # 2 bundled + 2 blockchain + 2 bankr (after staging both optional dirs)
+    assert result["total_bundled"] == 6
 
-    # Bundle was augmented with blockchain (production code did the cp)
+    # Bundle was augmented with both staged dirs (production code did the cp)
     assert (bundled / "blockchain" / "solana" / "SKILL.md").exists()
     assert (bundled / "blockchain" / "base" / "SKILL.md").exists()
+    assert (bundled / "bankr" / "stakr" / "SKILL.md").exists()
+    assert (bundled / "bankr" / "moltycash" / "SKILL.md").exists()
 
     # Skills dir got everything copied
     skills_dir = hermes_home / "skills"
@@ -145,6 +153,8 @@ def test_seed_copies_bundled_and_blockchain_skills(tmp_path: Path, monkeypatch, 
     assert (skills_dir / "productivity" / "notion" / "SKILL.md").exists()
     assert (skills_dir / "blockchain" / "solana" / "SKILL.md").exists()
     assert (skills_dir / "blockchain" / "base" / "SKILL.md").exists()
+    assert (skills_dir / "bankr" / "stakr" / "SKILL.md").exists()
+    assert (skills_dir / "bankr" / "moltycash" / "SKILL.md").exists()
 
     # Manifest got written
     manifest = (skills_dir / ".bundled_manifest").read_text(encoding="utf-8")
@@ -152,6 +162,8 @@ def test_seed_copies_bundled_and_blockchain_skills(tmp_path: Path, monkeypatch, 
     assert "notion" in manifest
     assert "solana" in manifest
     assert "base" in manifest
+    assert "stakr" in manifest
+    assert "moltycash" in manifest
 
 
 def test_seed_idempotent_when_blockchain_already_staged(tmp_path: Path, monkeypatch) -> None:
