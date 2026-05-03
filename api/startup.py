@@ -132,6 +132,125 @@ def auto_install_agent_deps() -> bool:
         return False
 
 
+def seed_bundled_skills_on_startup() -> dict | None:
+    """Seed the upstream Hermes Agent's bundled skills into ``~/.hermes/skills/``.
+
+    The vanilla-hermes-agent package ships ~89 SKILL.md files in
+    ``hermes-agent/skills/`` and another ~60 in ``hermes-agent/optional-skills/``.
+    Its CLI seeds them via ``hermes_cli.profiles.seed_profile_skills()``, but
+    that path only fires from interactive ``hermes`` commands — when the agent
+    boots under hermes-webui, the seed never runs and tenants end up with
+    only the handful of user-authored skills they create themselves.
+
+    This helper closes that gap by calling ``tools.skills_sync.sync_skills``
+    with ``HERMES_BUNDLED_SKILLS`` pointed at the agent's ``skills/`` dir.
+    Bankr's blockchain skills (Solana, Base) live under
+    ``optional-skills/blockchain/`` upstream — we stage them into the bundle
+    dir before sync so they ride the same flow without modifying upstream.
+
+    Idempotent: ``sync_skills`` short-circuits skills already in the
+    on-disk manifest with matching hashes. Safe to run on every boot.
+
+    Failures are logged but do not raise — startup must not be blocked by
+    a problem in skill seeding.
+
+    Honors:
+      - ``HERMES_SKIP_SKILLS_SEED=1``  bypass entirely
+      - ``HERMES_WEBUI_AGENT_DIR``     override agent dir (defaults to
+                                        ``$HERMES_HOME/hermes-agent``)
+
+    Returns the dict from ``sync_skills`` (with keys ``copied``,
+    ``updated``, ``skipped``, ``user_modified``, ``cleaned``,
+    ``total_bundled``) on success, or ``None`` if seeding was skipped.
+    """
+    if os.environ.get("HERMES_SKIP_SKILLS_SEED", "").strip() in ("1", "true", "yes"):
+        print("[skills] seed skipped (HERMES_SKIP_SKILLS_SEED set)", flush=True)
+        return None
+
+    agent_dir = _agent_dir()
+    if agent_dir is None:
+        print("[skills] seed skipped: agent dir not found", flush=True)
+        return None
+
+    bundled_dir = agent_dir / "skills"
+    if not bundled_dir.is_dir():
+        print(f"[skills] seed skipped: no bundled skills dir at {bundled_dir}", flush=True)
+        return None
+
+    # Stage selected ``optional-skills/`` subdirs into the bundle so the
+    # existing sync flow picks them up alongside the rest. Each entry is
+    # a one-shot copy: if the destination already exists we leave it
+    # alone so any updates the user (or a later vanilla release) made
+    # are not clobbered. ``shutil.copytree`` refuses an existing
+    # destination, which is exactly what we want here.
+    #
+    # What we stage and why:
+    #   - blockchain/  Nous-bundled Solana + Base skills.
+    #   - bankr/       BankrBot suite (~37 skills) vendored upstream so
+    #                  every agent ships with the Bankr stack pre-
+    #                  installed instead of routing through the dashboard
+    #                  catalog one skill at a time.
+    #
+    # NOT staged: the rest of optional-skills/ (research/, security/,
+    # email/, communication/, etc.) — those remain opt-in via the
+    # dashboard's catalog "Install" flow because we don't want to
+    # auto-install ~60 skills the user didn't ask for.
+    import shutil
+    for staged_name in ("blockchain", "bankr"):
+        src = agent_dir / "optional-skills" / staged_name
+        if not src.is_dir():
+            continue
+        dest = bundled_dir / staged_name
+        if dest.exists():
+            continue
+        try:
+            shutil.copytree(src, dest)
+            count = sum(1 for _ in dest.rglob("SKILL.md"))
+            print(
+                f"[skills] staged optional-skills/{staged_name} ({count} skills) into {dest}",
+                flush=True,
+            )
+        except OSError as e:
+            # Non-fatal — sync_skills will still pick up the rest
+            print(f"[!!] failed to stage optional-skills/{staged_name}: {e}", flush=True)
+
+    # Point the upstream sync at the (now-augmented) bundle dir. The env
+    # var is read by tools.skills_sync._get_bundled_dir, so we don't have
+    # to plumb it through any other way.
+    os.environ["HERMES_BUNDLED_SKILLS"] = str(bundled_dir)
+
+    try:
+        # Imported lazily so a missing/broken vanilla-hermes-agent install
+        # surfaces here as a logged warning rather than a top-level
+        # ImportError that would tank the entire startup module.
+        from tools.skills_sync import sync_skills  # type: ignore[import-not-found]
+    except ImportError as e:
+        print(f"[!!] skills seed unavailable: {e}", flush=True)
+        return None
+
+    try:
+        result = sync_skills(quiet=True)
+    except Exception as e:  # noqa: BLE001 - never block startup on this
+        print(f"[!!] skills seed failed: {e}", flush=True)
+        return None
+
+    copied = len(result.get("copied", []) or [])
+    updated = len(result.get("updated", []) or [])
+    user_modified = len(result.get("user_modified", []) or [])
+    total = result.get("total_bundled", 0)
+    if copied or updated or user_modified:
+        print(
+            f"[skills] seed: copied={copied} updated={updated} "
+            f"user_modified={user_modified} total_bundled={total}",
+            flush=True,
+        )
+    else:
+        # Quiet path on the common case (every boot after the first).
+        # Verbose enough for grep but not noisy in scrollback.
+        print(f"[skills] seed: up to date ({total} bundled)", flush=True)
+    return result
+
+
 def sweep_stale_inflight_state() -> int:
     """Clear stale in-flight bookkeeping from all on-disk sessions at boot.
 
