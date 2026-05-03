@@ -1,5 +1,26 @@
 # Hermes Web UI -- Changelog
 
+## [v0.50.289] — 2026-05-03
+
+### Fixed (1 PR — TCP keepalive on accepted connections — closes #1580)
+
+- **TCP keepalive on accepted connections to clean up dead `CLOSE-WAIT` sockets** (#1581 by @happy5318; closes #1580) — reporter (also @happy5318) observed `CLOSE-WAIT` zombie connections accumulating on long-running Linux WebUI servers (`ss -tn | grep 8787 | grep CLOSE-WAIT` showing nonzero counts after extended uptime). Without TCP keepalive enabled, a thread blocked in `recv()` waiting for the next request on an HTTP/1.0-or-1.1 keep-alive socket has no way to detect a peer that crashed, lost its network, or otherwise disappeared without sending FIN — the socket sits in `ESTABLISHED` indefinitely until the kernel reclaims it on idle thresholds far higher than necessary. **Fix (load-bearing):** new `Handler.setup()` override in `server.py` that, on every accepted connection, sets `SO_KEEPALIVE=1` (the master switch that enables TCP keepalive on this socket), `TCP_NODELAY=1` (disables Nagle for HTTP small-burst latency), and the keepalive timing parameters `TCP_KEEPIDLE=10` / `TCP_KEEPINTVL=5` / `TCP_KEEPCNT=3` → kernel starts probing a connection idle for 10s, probes every 5s, drops after 3 failed probes (~25s detection). All setsockopts wrapped in a single `try/except (OSError, AttributeError)` for graceful no-op on platforms where `TCP_KEEP*` constants aren't available (macOS, Windows). Healthy SSE streams send their existing 30s app-level `: keepalive\\n\\n` heartbeat which resets the kernel idle timer well below the 10s threshold, so probes never fire on healthy long-lived connections; only genuinely idle keep-alive sockets get cleaned up. The PR additionally adds a `QuietHTTPServer.server_bind()` block that sets `SO_REUSEADDR` (already the default via `allow_reuse_address=True`, so redundant) and listening-socket `TCP_KEEP*` (no-op without `SO_KEEPALIVE` on the listening socket — child sockets don't inherit keepalive parameters from the listener on Linux). Reviewer flagged that block as harmless dead code; deferred cleanup to follow-up issue along with macOS-doesn't-get-SO_KEEPALIVE behavior (the entire `try` block aborts on the first `AttributeError` from `TCP_KEEPIDLE`, so macOS dev servers get TCP_NODELAY but not the keepalive master switch). Linux is the production target and gets the full benefit.
+
+### Tests
+
+4094 → **4094 passing** (no new tests; kernel-level networking change is impractical to test in unit suite without a multi-process integration fixture). 0 regressions. Full suite in 110s.
+
+### Pre-release verification
+
+- Independent reviewer (nesquena, APPROVED) traced end-to-end: per-connection `Handler.setup()` is the load-bearing change; `SO_KEEPALIVE=1` is the master switch; 10/5/3 timing produces ~25s detection; healthy SSE streams' 30s app keepalive resets the kernel idle timer so probes never escalate on healthy connections; security audit clean (no XSS, SSRF, auth, path traversal, eval, shell — pure socket-options change); race-free (`server_bind` once at startup, `setup` per-connection on the request thread).
+- Pre-release Opus advisor: **SHIP AS-IS** — no MUST-FIX. All 5 verification questions check out (race-free per-thread `Handler` lifecycle, kernel-keepalive death raises `OSError(ETIMEDOUT)` which is in both `_CLIENT_DISCONNECT_ERRORS` AND `QuietHTTPServer.handle_error`'s errno-110 suppress list, HTTP/1.0 churn impact negligible at 5 setsockopts per accept, swallow of `OSError`/`AttributeError` defensible for hotfix scope, dead-code cleanup in `server_bind()` correctly deferred to follow-up).
+- Full suite: **4094 passed, 2 skipped, 3 xpassed, 0 failed** in 110s.
+- Syntax: `py_compile server.py` → OK.
+
+### Maintainer in-stage actions
+
+- **PR rebase** (REBASE-DEFAULT rule): PR base was 111 commits behind `origin/master` (forked at `6c3ff3ff`, pre-v0.50.275). Rebased onto current master. Clean, no conflicts. Re-tested on rebased branch → 4094 passed, no regressions.
+
 ## [v0.50.288] — 2026-05-03
 
 ### Fixed (3 PRs — picker symmetry + cron profile isolation — closes #1567, #1568, #1573)
