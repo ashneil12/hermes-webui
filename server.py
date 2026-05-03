@@ -18,7 +18,12 @@ from api.config import HOST, PORT, STATE_DIR, SESSION_DIR, DEFAULT_WORKSPACE
 from api.helpers import j, get_profile_cookie
 from api.profiles import set_request_profile, clear_request_profile
 from api.routes import handle_get, handle_post
-from api.startup import auto_install_agent_deps, fix_credential_permissions, sweep_stale_inflight_state
+from api.startup import (
+    auto_install_agent_deps,
+    fix_credential_permissions,
+    seed_bundled_skills_on_startup,
+    sweep_stale_inflight_state,
+)
 from api.updates import WEBUI_VERSION
 
 
@@ -154,6 +159,15 @@ def main() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
     DEFAULT_WORKSPACE.mkdir(parents=True, exist_ok=True)
+
+    # Seed the upstream Hermes Agent's bundled skills (and Bankr's
+    # blockchain optional skills) into ~/.hermes/skills/ before the gateway
+    # starts serving. Runs every boot but is idempotent — subsequent calls
+    # report "up to date" without copying. Failures are logged, not fatal.
+    try:
+        seed_bundled_skills_on_startup()
+    except Exception as e:
+        print(f'[!!] WARNING: bundled-skills seed failed: {e}', flush=True)
 
     # STREAMS is in-memory only. If the previous process exited mid-stream
     # (redeploy, crash, OOM kill), sessions on disk still carry an
