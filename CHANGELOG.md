@@ -1,5 +1,22 @@
 # Hermes Web UI -- Changelog
 
+## [v0.50.294] — 2026-05-04
+
+### Fixed (1 PR — closes #1633)
+
+- **`/api/models` disk cache now invalidated on every WebUI version change** (closes #1633) — `STATE_DIR/models_cache.json` was persisted across server restarts without any version stamp. A Docker container update from version A to version B read the cache file written by version A — users saw stale picker contents (missing models, phantom provider groups, e.g. the v0.50.281 4-model Nous Portal + `Opencode_Go` phantom) for up to 24 hours until either the TTL expired, an unrelated provider edit triggered `invalidate_models_cache()`, or they manually deleted the file. Reporter Deor (Discord) updated to v0.50.292 — which contained fixes for #1538, #1539, and #1568 — did a hard refresh and cleared site data, and still saw byte-for-byte identical picker contents because the server kept reading the v0.50.281 cache file off the host-mounted volume. **Fix:** `_save_models_cache_to_disk()` now stamps payloads with `_webui_version` (resolved lazily from `api.updates.WEBUI_VERSION` to avoid a circular import) and `_schema_version = 2`. `_load_models_cache_from_disk()` rejects any cache where either field mismatches the runtime — every release auto-rebuilds from live provider data on the very next `/api/models` call. Legacy unstamped caches (pre-#1633 files) are also rejected, so the first read after upgrading to this release rebuilds cleanly. Schema version is independent of the WebUI version stamp so future cache-shape changes can invalidate older releases without relying on a tag bump alone. The early-init edge case (api.updates not yet loaded) skips the version check rather than wedging the boot — at worst an unstamped file is written once and rejected on the next call.
+
+### Tests
+
+4180 → **4199 passing** (+19 regression tests on `tests/test_issue1633_models_cache_version_stamp.py`). 0 regressions. Full suite in ~115s.
+
+### Pre-release verification
+
+- Self-built fix (nesquena-hermes), pending Opus advisor pre-merge pass and independent review APPROVED by nesquena.
+- End-to-end behavioral test (`test_docker_update_scenario_invalidates_old_cache`) reproduces Deor's exact reported scenario: a cache stamped at `v0.50.281` fails to load when runtime is `v0.50.292`, forcing a fresh rebuild that picks up the picker fixes shipped between releases.
+- Round-trip + version-mismatch + legacy-unstamped + schema-mismatch + early-init + corrupt-JSON + missing-file + atomic-overwrite + invalidate-cache-tear-down all pinned.
+- Smoke test: real `api.updates.WEBUI_VERSION` resolved at runtime (`v0.50.293-dirty` against the worktree); cache stamped with that version; round-trip works end-to-end.
+
 ## [v0.50.293] — 2026-05-04
 
 ### Fixed (3 PRs — profile isolation trio + agent version badge + #1597 follow-up)
