@@ -9,10 +9,10 @@ const SESSION_QUEUES={};  // keyed by session_id for queued follow-up turns
 // single-threaded so only one done event fires at a time in practice.
 let _queueDrainSid=null;
 const $=id=>document.getElementById(id);
-// Redirect to /login when the server responds with 401 (auth session expired).
-// Handles iOS PWA standalone mode where a server-side 302→/login would break
-// out of the PWA shell into Safari instead of navigating within it.
-function _redirectIfUnauth(res){if(res&&res.status===401){window.location.href='/login?next='+encodeURIComponent(window.location.pathname+window.location.search);return true;}return false;}
+// Redirect to login when the server responds with 401 (auth session expired).
+// Handles iOS PWA standalone mode and keeps subpath mounts like /hermes/ from
+// escaping to the personal site root /login.
+function _redirectIfUnauth(res){if(res&&res.status===401){window.location.href='login?next='+encodeURIComponent(window.location.pathname+window.location.search);return true;}return false;}
 function _getSessionQueue(sid, create=false){
   if(!sid) return [];
   if(!SESSION_QUEUES[sid]&&create) SESSION_QUEUES[sid]=[];
@@ -2976,7 +2976,7 @@ async function _waitForServerThenReload(opts){
   await new Promise(r=>setTimeout(r, interval));
   while(Date.now()<deadline){
     try{
-      const r=await fetch('/health',{cache:'no-store'});
+      const r=await fetch(new URL('health', document.baseURI||location.href).href,{cache:'no-store'});
       if(r.ok){
         let data={};
         try{ data=await r.json(); }catch(_){}

@@ -1287,7 +1287,7 @@ function applyBotName(){
   // ?test_updates=1 in URL forces banner display for testing (bypasses sessionStorage guards)
   const _testUpdates=new URLSearchParams(location.search).get('test_updates')==='1';
   if(_testUpdates||(_bootSettings.check_for_updates!==false&&!sessionStorage.getItem('hermes-update-checked')&&!sessionStorage.getItem('hermes-update-dismissed'))){
-    const _checkUrl='/api/updates/check'+(_testUpdates?'?simulate=1':'');
+    const _checkUrl='api/updates/check'+(_testUpdates?'?simulate=1':'');
     api(_checkUrl).then(d=>{if(!_testUpdates)sessionStorage.setItem('hermes-update-checked','1');if((d.webui&&d.webui.behind>0)||(d.agent&&d.agent.behind>0))_showUpdateBanner(d);}).catch(()=>{});
   }
   // Fetch active profile

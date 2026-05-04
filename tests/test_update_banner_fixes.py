@@ -349,13 +349,14 @@ class TestUiJsUpdateBanner:
         )
 
     def test_wait_for_server_polls_health(self):
-        """_waitForServerThenReload() must fetch /health to determine readiness."""
+        """_waitForServerThenReload() must fetch health to determine readiness."""
         src = read('static/ui.js')
         m = re.search(r'function\s+_waitForServerThenReload\b.*?\n\}', src, re.DOTALL)
         assert m, "_waitForServerThenReload() not found"
         fn = m.group(0)
-        assert '/health' in fn, (
-            "_waitForServerThenReload must poll /health to detect server readiness"
+        assert "new URL('health'" in fn, (
+            "_waitForServerThenReload must poll the mount-relative health endpoint "
+            "to detect server readiness"
         )
         assert 'location.reload' in fn, (
             "_waitForServerThenReload must call location.reload() once the server is ready"

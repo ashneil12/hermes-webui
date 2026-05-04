@@ -1393,7 +1393,7 @@ function startApprovalPolling(sid) {
   stopApprovalPolling();
   // ── SSE (preferred): long-lived connection, server pushes instantly ──
   try {
-    const es = new EventSource('/api/approval/stream?session_id=' + encodeURIComponent(sid));
+    const es = new EventSource(new URL('api/approval/stream?session_id=' + encodeURIComponent(sid), document.baseURI || location.href).href);
     let _fallbackActive = false;
 
     es.addEventListener('initial', e => {
@@ -1755,7 +1755,7 @@ function startClarifyPolling(sid) {
 
   // SSE primary path: long-lived connection pushes events instantly.
   try {
-    _clarifyEventSource = new EventSource('/api/clarify/stream?session_id=' + encodeURIComponent(sid));
+    _clarifyEventSource = new EventSource(new URL('api/clarify/stream?session_id=' + encodeURIComponent(sid), document.baseURI || location.href).href);
   } catch(e) {
     _startClarifyFallbackPoll(sid);
     return;
@@ -1873,7 +1873,7 @@ function sendBrowserNotification(title,body){
 
 function attachBtwStream(parentSid, streamId, question){
   if(!parentSid||!streamId) return;
-  const src=new EventSource('/api/chat/stream?stream_id='+encodeURIComponent(streamId));
+  const src=new EventSource(new URL('api/chat/stream?stream_id='+encodeURIComponent(streamId), document.baseURI||location.href).href);
   let answer='';
   let btwRow=null;
   let _streamDone=false;

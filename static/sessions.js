@@ -1437,7 +1437,7 @@ async function probeGatewaySSEStatus(){
   if(_gatewayProbeInFlight || !window._showCliSessions) return;
   _gatewayProbeInFlight = true;
   try{
-    const resp = await fetch('/api/sessions/gateway/stream?probe=1', { credentials:'same-origin' });
+    const resp = await fetch(new URL('api/sessions/gateway/stream?probe=1', location.href).href, { credentials:'same-origin' });
     const data = await resp.json().catch(() => ({}));
     if(resp.ok && data.watcher_running){
       stopGatewayPollFallback();
