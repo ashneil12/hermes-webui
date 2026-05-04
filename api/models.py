@@ -524,20 +524,27 @@ class Session:
 
     def compact(self, include_runtime=False, active_stream_ids=None) -> dict:
         active_stream_ids = active_stream_ids if active_stream_ids is not None else set()
+        has_pending_user_message = bool(self.pending_user_message)
+        message_count = (
+            self._metadata_message_count
+            if self._metadata_message_count is not None
+            else len(self.messages)
+        )
+        if has_pending_user_message:
+            message_count = max(message_count, 1)
+        last_message_at = _last_message_timestamp(self.messages) or self.updated_at
+        if has_pending_user_message and self.pending_started_at:
+            last_message_at = self.pending_started_at
         return {
             'session_id': self.session_id,
             'title': self.title,
             'workspace': self.workspace,
             'model': self.model,
             'model_provider': self.model_provider,
-            'message_count': (
-                self._metadata_message_count
-                if self._metadata_message_count is not None
-                else len(self.messages)
-            ),
+            'message_count': message_count,
             'created_at': self.created_at,
             'updated_at': self.updated_at,
-            'last_message_at': _last_message_timestamp(self.messages) or self.updated_at,
+            'last_message_at': last_message_at,
             'pinned': self.pinned,
             'archived': self.archived,
             'project_id': self.project_id,
@@ -556,6 +563,7 @@ class Session:
             **({'parent_session_id': self.parent_session_id} if self.parent_session_id else {}),
             'active_stream_id': self.active_stream_id,
             'pending_user_message': self.pending_user_message,
+            'has_pending_user_message': has_pending_user_message,
             'is_cli_session': self.is_cli_session,
             'source_tag': self.source_tag,
             'raw_source': self.raw_source,
@@ -926,6 +934,7 @@ def all_sessions():
                 s.get('title', 'Untitled') == 'Untitled'
                 and s.get('message_count', 0) == 0
                 and not s.get('active_stream_id')
+                and not s.get('has_pending_user_message')
             )]
             result = [s for s in result if not _hide_from_default_sidebar(s)]
             # Backfill: sessions created before Sprint 22 have no profile tag.

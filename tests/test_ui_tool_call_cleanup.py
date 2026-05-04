@@ -82,6 +82,19 @@ class TestToolCallGroupingStatic:
             "Settings panel should load and save the simplified_tool_calling setting."
         )
 
+    def test_simplified_tool_calling_autosave_hot_applies_renderer_mode(self):
+        panels = (REPO / "static" / "panels.js").read_text(encoding="utf-8")
+        fn = _function_body(panels, "_autosavePreferencesSettings")
+        assert "window._simplifiedToolCalling" in fn, (
+            "Autosaving Compact tool activity should update the live renderer flag immediately."
+        )
+        assert "clearMessageRenderCache()" in fn, (
+            "Autosaving Compact tool activity should invalidate cached transcript HTML."
+        )
+        assert "renderMessages()" in fn, (
+            "Autosaving Compact tool activity should rebuild the visible transcript without a refresh."
+        )
+
     def test_render_messages_gates_settled_activity_grouping(self):
         fn = _function_body(UI_JS, "renderMessages")
         helper = _function_body(UI_JS, "ensureActivityGroup")

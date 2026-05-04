@@ -2052,6 +2052,10 @@ def _run_agent_streaming(
             # Pass personality via ephemeral_system_prompt (agent's own mechanism)
             if _personality_prompt:
                 agent.ephemeral_system_prompt = _personality_prompt
+            _pending_started_at = getattr(s, 'pending_started_at', None)
+            # Normal chat-start sets pending_started_at before spawning this thread;
+            # fallback to now only for recovered/legacy flows where that marker is absent.
+            _turn_started_at = _pending_started_at if _pending_started_at is not None else time.time()
             _previous_messages = list(s.messages or [])
             _previous_context_messages = list(_session_context_messages(s))
             _pre_compression_count = getattr(
@@ -2449,6 +2453,15 @@ def _run_agent_streaming(
                         if isinstance(_rm, dict) and _rm.get('role') == 'assistant':
                             _rm['reasoning'] = _reasoning_text
                             break
+                try:
+                    _turn_duration_seconds = max(0.0, time.time() - float(_turn_started_at))
+                except Exception:
+                    _turn_duration_seconds = 0.0
+                if s.messages:
+                    for _dm in reversed(s.messages):
+                        if isinstance(_dm, dict) and _dm.get('role') == 'assistant':
+                            _dm['_turnDuration'] = round(_turn_duration_seconds, 3)
+                            break
                 # Persist context window data on the session so the context-ring
                 # indicator survives a page reload (#1318). Must run BEFORE
                 # s.save() for the same reason as the reasoning trace above.
@@ -2496,7 +2509,12 @@ def _run_agent_streaming(
                     )
             except Exception:
                 logger.debug("Failed to sync session to insights")
-            usage = {'input_tokens': input_tokens, 'output_tokens': output_tokens, 'estimated_cost': estimated_cost}
+            usage = {
+                'input_tokens': input_tokens,
+                'output_tokens': output_tokens,
+                'estimated_cost': estimated_cost,
+                'duration_seconds': round(_turn_duration_seconds, 3),
+            }
             # Include context window data from the agent's compressor for the UI indicator.
             # The session-level persistence happens above (before s.save()) so the values
             # survive a page reload; this block only populates the live SSE usage payload.

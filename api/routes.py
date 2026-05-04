@@ -1489,7 +1489,8 @@ button:hover{background:rgba(124,185,255,.25)}
   </form>
   <div class="err" id="err"></div>
 </div>
-<script src="/static/login.js"></script>
+<!-- Keep login.js relative so subpath mounts load it under the current scope. -->
+<script src="static/login.js?v={{WEBUI_VERSION}}"></script>
 </body></html>"""
 
 # ── Insights endpoint ──────────────────────────────────────────────────────────
@@ -1621,9 +1622,13 @@ def handle_get(handler, parsed) -> bool:
         _login_strings = _LOGIN_LOCALE[
             _resolve_login_locale_key(_lang)
         ]
+        from urllib.parse import quote
+        from api.updates import WEBUI_VERSION
+        version_token = quote(WEBUI_VERSION, safe="")
         _page = (
             _LOGIN_PAGE_HTML.replace("{{BOT_NAME}}", _bn)
             .replace("{{BOT_NAME_INITIAL}}", _bn[0].upper())
+            .replace("{{WEBUI_VERSION}}", version_token)
             .replace("{{LANG}}", _html.escape(_login_strings["lang"]))
             .replace("{{LOGIN_TITLE}}", _html.escape(_login_strings["title"]))
             .replace("{{LOGIN_SUBTITLE}}", _html.escape(_login_strings["subtitle"]))

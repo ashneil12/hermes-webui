@@ -383,6 +383,9 @@ async function loadSession(sid){
   S.session=data.session;
   S.session._modelResolutionDeferred=true;
   S.lastUsage={...(data.session.last_usage||{})};
+  // Sync workspace display immediately so the chip label reflects the new session's workspace
+  // before any async message-loading begins (mirrors how model is handled).
+  if(typeof syncTopbar==='function') syncTopbar();
   _setSessionViewedCount(S.session.session_id, Number(data.session.message_count || 0));
   _clearSessionCompletionUnread(S.session.session_id);
   localStorage.setItem('hermes-webui-session',S.session.session_id);
@@ -1766,6 +1769,60 @@ function _activeSessionIdForSidebar(){
   if(S.session&&S.session.session_id) return S.session.session_id;
   if(typeof _sessionIdFromLocation==='function') return _sessionIdFromLocation();
   return null;
+}
+
+function upsertActiveSessionForLocalTurn({title='', messageCount=0, timestampMs=Date.now()}={}){
+  if(!S.session||!S.session.session_id) return;
+  const sid=S.session.session_id;
+  const nowSec=Math.floor((Number(timestampMs)||Date.now())/1000);
+  const localCount=Array.isArray(S.messages)?S.messages.length:0;
+  const count=Math.max(Number(S.session.message_count||0),Number(messageCount||0),localCount,1);
+  S.session.message_count=count;
+  S.session.last_message_at=nowSec;
+  S.session.updated_at=nowSec;
+  if((S.session.title==='Untitled'||!S.session.title)&&title){
+    S.session.title=title;
+  }
+  const existingIdx=_allSessions.findIndex(s=>s&&s.session_id===sid);
+  const row={
+    ...S.session,
+    session_id:sid,
+    title:S.session.title||title||'New chat',
+    message_count:count,
+    last_message_at:nowSec,
+    updated_at:nowSec,
+    profile:S.session.profile||S.activeProfile||'default',
+    is_streaming:true,
+  };
+  if(existingIdx>=0) _allSessions[existingIdx]={..._allSessions[existingIdx],...row};
+  else _allSessions.unshift(row);
+  renderSessionListFromCache();
+}
+
+function clearOptimisticSessionStreaming(sid){
+  sid=sid||(S.session&&S.session.session_id)||'';
+  if(!sid) return;
+  if(S.session&&S.session.session_id===sid){
+    S.session.active_stream_id=null;
+    S.activeStreamId=null;
+  }
+  if(Array.isArray(_allSessions)){
+    const idx=_allSessions.findIndex(s=>s&&s.session_id===sid);
+    if(idx>=0){
+      _allSessions[idx]={
+        ..._allSessions[idx],
+        active_stream_id:null,
+        pending_user_message:null,
+        pending_started_at:null,
+        is_streaming:false,
+      };
+    }
+  }
+  if(typeof _sessionStreamingById!=='undefined'&&_sessionStreamingById&&typeof _sessionStreamingById.set==='function'){
+    _sessionStreamingById.set(sid,false);
+  }
+  if(typeof _forgetObservedStreamingSession==='function') _forgetObservedStreamingSession(sid);
+  renderSessionListFromCache();
 }
 
 function renderSessionListFromCache(){

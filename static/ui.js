@@ -1209,6 +1209,17 @@ let _programmaticScroll=false;
   });
 })();
 function _fmtTokens(n){if(!n||n<0)return'0';if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'k';return String(n);}
+function _formatTurnDuration(seconds){
+  const n=Number(seconds);
+  if(!Number.isFinite(n)||n<0)return'';
+  const total=Math.max(0,Math.round(n));
+  if(total<60)return`${total}s`;
+  const h=Math.floor(total/3600);
+  const m=Math.floor((total%3600)/60);
+  const s=total%60;
+  if(h)return`${h}h ${m}m`;
+  return`${m}m ${s}s`;
+}
 
 const _MOBILE_CONFIG_BASE_LABEL='Workspace, model, reasoning, and context settings';
 
@@ -3196,7 +3207,7 @@ function ensureActivityGroup(inner, opts){
     group.setAttribute('data-tool-call-group','1');
     group.setAttribute('data-agent-activity-group','1');
     if(live) group.setAttribute('data-live-tool-call-group','1');
-    group.innerHTML=`<button type="button" class="tool-call-group-summary" aria-expanded="${collapsed?'false':'true'}" onclick="const g=this.closest('.tool-call-group');const c=g.classList.toggle('tool-call-group-collapsed');this.setAttribute('aria-expanded',String(!c));if(typeof _onLiveActivityToggle==='function')_onLiveActivityToggle(g);"><span class="tool-call-group-chevron">${li('chevron-right',12)}</span><span class="tool-call-group-label">Activity</span><span class="tool-call-group-list">tools / thinking</span><span class="tool-call-group-count">0</span></button><div class="tool-call-group-body"></div>`;
+    group.innerHTML=`<button type="button" class="tool-call-group-summary" aria-expanded="${collapsed?'false':'true'}" onclick="const g=this.closest('.tool-call-group');const c=g.classList.toggle('tool-call-group-collapsed');this.setAttribute('aria-expanded',String(!c));if(typeof _onLiveActivityToggle==='function')_onLiveActivityToggle(g);"><span class="tool-call-group-chevron">${li('chevron-right',12)}</span><span class="tool-call-group-label">Activity</span><span class="tool-call-group-list">tools / thinking</span><span class="tool-call-group-duration"></span><span class="tool-call-group-count">0</span></button><div class="tool-call-group-body"></div>`;
     const anchor=opts.anchor||null;
     if(anchor&&anchor.parentElement===inner) anchor.insertAdjacentElement('afterend', group);
     else inner.appendChild(group);
@@ -3992,6 +4003,8 @@ function renderMessages(){
         const anchorParent=anchorRow.parentElement;
         const insertAfterNode = anchorInsertAfter.get(anchorRow) || anchorRow;
         const group=ensureActivityGroup(anchorParent,{collapsed:true,anchor:insertAfterNode});
+        const sourceMsg=S.messages[aIdx]||{};
+        if(sourceMsg._turnDuration!==undefined) group.setAttribute('data-turn-duration', String(sourceMsg._turnDuration));
         const body=group&&group.querySelector('.tool-call-group-body');
         if(!body) continue;
         const thinkingText=assistantThinking.get(aIdx);
@@ -4043,30 +4056,49 @@ function renderMessages(){
       }
     }
   }
-  // Render per-turn token usage on each assistant message that has it (#503).
-  // Replaces the old cumulative-total-on-last-bubble approach.
-  if(window._showTokenUsage){
+  // Render per-turn duration and optional token usage on assistant messages.
+  // Duration stays visible even when token usage is disabled, because it answers
+  // the basic "how long did that turn take?" UX question.
+  {
     const asstRows=inner.querySelectorAll('.assistant-turn');
     let ai=0; // assistant-only index for DOM rows
     for(let mi=0;mi<S.messages.length;mi++){
       const msg=S.messages[mi];
       if(msg.role!=='assistant'){continue;}
-      if(!msg._turnUsage){ai++;continue;}
+      const hasTurnUsage=!!msg._turnUsage;
+      const compactActivityForMessage=isSimplifiedToolCalling()&&(
+        assistantThinking.has(mi)||
+        (S.toolCalls||[]).some(tc=>tc&&(tc.assistant_msg_idx!==undefined?tc.assistant_msg_idx:-1)===mi)
+      );
+      const durationText=compactActivityForMessage?'':_formatTurnDuration(msg._turnDuration);
+      if(!hasTurnUsage&&!durationText){ai++;continue;}
       if(ai>=asstRows.length) continue;
       const row=asstRows[ai];
       const footerRows=row.querySelectorAll('.msg-foot');
       const targetFoot=footerRows.length?footerRows[footerRows.length-1]:null;
-      if(!targetFoot||targetFoot.querySelector('.msg-usage-inline')){ai++;continue;}
-      const usage=document.createElement('span');
-      usage.className='msg-usage-inline';
-      const inTok=msg._turnUsage.input_tokens||0;
-      const outTok=msg._turnUsage.output_tokens||0;
-      const cost=msg._turnUsage.estimated_cost;
-      let text=`${_fmtTokens(inTok)} in · ${_fmtTokens(outTok)} out`;
-      if(cost) text+=` · ~$${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`;
-      usage.textContent=text;
-      targetFoot.classList.add('msg-foot-with-usage');
-      targetFoot.insertBefore(usage, targetFoot.firstChild);
+      if(!targetFoot||targetFoot.querySelector('.msg-usage-inline,.msg-duration-inline')){ai++;continue;}
+      const fragments=[];
+      if(durationText){
+        const duration=document.createElement('span');
+        duration.className='msg-duration-inline';
+        duration.textContent=`Done in ${durationText}`;
+        fragments.push(duration);
+      }
+      if(window._showTokenUsage&&hasTurnUsage){
+        const usage=document.createElement('span');
+        usage.className='msg-usage-inline';
+        const inTok=msg._turnUsage.input_tokens||0;
+        const outTok=msg._turnUsage.output_tokens||0;
+        const cost=msg._turnUsage.estimated_cost;
+        let text=`${_fmtTokens(inTok)} in · ${_fmtTokens(outTok)} out`;
+        if(cost) text+=` · ~$${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`;
+        usage.textContent=text;
+        fragments.push(usage);
+      }
+      if(fragments.length){
+        targetFoot.classList.add('msg-foot-with-usage');
+        for(let i=fragments.length-1;i>=0;i--) targetFoot.insertBefore(fragments[i], targetFoot.firstChild);
+      }
       ai++;
     }
   }
@@ -4187,6 +4219,7 @@ function _syncToolCallGroupSummary(group){
   const label=group.querySelector('.tool-call-group-label');
   const list=group.querySelector('.tool-call-group-list');
   const badge=group.querySelector('.tool-call-group-count');
+  const durationEl=group.querySelector('.tool-call-group-duration');
   const parts=[];
   if(thinkingCount) parts.push('thinking');
   if(uniqueNames.length) parts.push(uniqueNames.slice(0,5).join(', ')+(uniqueNames.length>5?'…':''));
@@ -4198,6 +4231,11 @@ function _syncToolCallGroupSummary(group){
     else label.textContent='Activity';
   }
   if(list) list.textContent=parts.join(' · ')||'tools / thinking';
+  if(durationEl){
+    const durationText=_formatTurnDuration(group.dataset.turnDuration);
+    durationEl.textContent=durationText?`Done in ${durationText}`:'';
+    durationEl.style.display=durationText?'':'none';
+  }
   if(badge) badge.textContent=String(total);
 }
 

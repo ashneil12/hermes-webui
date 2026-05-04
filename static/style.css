@@ -1434,6 +1434,13 @@
 .ws-divider{height:1px;background:var(--border);margin:4px 0;}
 .ws-manage{color:var(--muted);font-size:12px;}
 .ws-opt-action{display:flex;flex-direction:row;align-items:center;gap:8px;}
+.ws-search-row{display:flex;align-items:center;gap:6px;padding:8px 10px 10px;}
+.ws-search-input{flex:1;background:var(--code-bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:6px 8px;font-size:12px;outline:none;font-family:inherit;min-width:0;}
+.ws-search-input:focus{border-color:var(--accent);}
+.ws-search-clear{flex-shrink:0;width:22px;height:22px;border:1px solid var(--border2);border-radius:50%;background:transparent;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:color .12s,border-color .12s;font-size:10px;}
+.ws-search-clear:hover{color:var(--text);border-color:var(--border);}
+.ws-list-container{overflow-y:auto;max-height:260px;}
+.ws-no-results{padding:12px 14px;text-align:center;color:var(--muted);font-size:12px;}
 .ws-opt-icon{display:inline-flex;align-items:center;justify-content:center;opacity:.82;flex-shrink:0;}
 .ws-opt-meta{font-size:11px;color:var(--muted);}
 /* ── Workspace management panel ── */
@@ -1712,7 +1719,8 @@ body.resizing{user-select:none;cursor:col-resize;}
 .tool-call-group-summary:hover{background:var(--surface-subtle-hover);color:var(--text);}
 .tool-call-group-label{font-weight:600;color:var(--muted);}
 .tool-call-group-list{opacity:.72;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.tool-call-group-count{margin-left:auto;opacity:.56;font-variant-numeric:tabular-nums;}
+.tool-call-group-duration{margin-left:auto;opacity:.62;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.tool-call-group-count{opacity:.56;font-variant-numeric:tabular-nums;}
 .tool-call-group-chevron{opacity:.45;display:inline-flex;transition:transform .16s ease;}
 .tool-call-group:not(.tool-call-group-collapsed) .tool-call-group-chevron{transform:rotate(90deg);}
 .tool-call-group-body{display:block;padding-left:var(--space-3);}
@@ -2693,11 +2701,13 @@ main.main.showing-profiles > #mainProfiles{display:flex;}
   justify-content: flex-start;
   gap: 8px;
 }
-.msg-usage-inline {
+.msg-usage-inline,
+.msg-duration-inline {
   font-size: 11px;
   color: var(--muted);
   opacity: .7;
   flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
 }
 .msg-foot-with-usage .msg-time,
 .msg-foot-with-usage .msg-actions {
