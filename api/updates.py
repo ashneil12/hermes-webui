@@ -207,9 +207,9 @@ def _check_repo(path, name):
     remote_url, _ = _run_git(['remote', 'get-url', 'origin'], path)
     # Convert SSH URLs (git@github.com:org/repo.git) to HTTPS
     if remote_url and remote_url.startswith('git@'):
-        remote_url = remote_url.replace(':', '/', 1).replace('git@', 'https://', 1).rstrip('.git')
-    elif remote_url:
-        remote_url = remote_url.rstrip('.git')
+        remote_url = remote_url.replace(':', '/', 1).replace('git@', 'https://', 1)
+    if remote_url and remote_url.endswith('.git'):
+        remote_url = remote_url[:-4]
 
     return {
         'name': name,
