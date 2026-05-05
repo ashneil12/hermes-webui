@@ -2141,7 +2141,10 @@ function _renderLlmWikiStatus(d) {
   const isError = status.status === 'error';
   const badgeClass = isReady ? 'ok' : isError ? 'err' : isEmpty ? 'warn' : 'muted';
   const badgeText = isReady ? 'Available' : isError ? 'Error' : isEmpty ? 'Empty' : 'Unavailable';
-  const docsUrl = status.docs_url || 'https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/research/research-llm-wiki';
+  const rawDocsUrl = status.docs_url || 'https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/research/research-llm-wiki';
+  // Guard against unsafe URL schemes (e.g. js: / data:) if docs_url ever
+  // becomes config-driven. esc() HTML-escapes but doesn't validate URL scheme.
+  const docsUrl = /^https?:\/\//i.test(rawDocsUrl) ? rawDocsUrl : '#';
   const toggleNote = status.toggle_available
     ? 'Toggle available from configured Hermes Agent setting.'
     : (status.toggle_reason || 'No stable LLM Wiki on/off config flag was detected, so this panel is read-only.');

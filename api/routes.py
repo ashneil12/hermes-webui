@@ -1804,6 +1804,15 @@ def _llm_wiki_config_path() -> str | None:
     )
 
 
+# Cap WIKI walks to prevent self-DoS if WIKI_PATH points at /, /etc, /home, etc.
+# Real LLM wikis have under a few thousand files; 10k is generous and catches misconfig.
+_LLM_WIKI_MAX_FILES = 10000
+# Refuse to walk these system roots even if explicitly configured.
+_LLM_WIKI_FORBIDDEN_ROOTS = frozenset(
+    str(Path(p).expanduser().resolve()) for p in ("/", "/etc", "/usr", "/var", "/opt", "/sys", "/proc")
+)
+
+
 def _llm_wiki_resolve_path() -> tuple[Path, str, bool]:
     hermes_home = _llm_wiki_active_hermes_home()
     raw = os.getenv("WIKI_PATH") or _llm_wiki_env_file_path(hermes_home)
@@ -1832,8 +1841,20 @@ def _llm_wiki_safe_iso(ts: float | None) -> str | None:
 def _llm_wiki_count_files(root: Path) -> int:
     if not root.exists() or not root.is_dir():
         return 0
+    # Defense in depth: refuse to walk forbidden system roots even if WIKI_PATH
+    # was set to one. The endpoint is auth-gated but a misconfigured server
+    # shouldn't self-DoS by rglob'ing all of /etc on every Insights load.
+    try:
+        if str(root.resolve()) in _LLM_WIKI_FORBIDDEN_ROOTS:
+            return 0
+    except Exception:
+        return 0
     count = 0
+    iterated = 0
     for item in root.rglob("*"):
+        iterated += 1
+        if iterated > _LLM_WIKI_MAX_FILES:
+            break  # bounded — prevents hangs on symlink loops or huge trees
         try:
             if item.is_file() and not any(part.startswith(".") for part in item.relative_to(root).parts):
                 count += 1
@@ -1844,11 +1865,21 @@ def _llm_wiki_count_files(root: Path) -> int:
 
 def _llm_wiki_page_files(wiki_path: Path) -> list[Path]:
     pages: list[Path] = []
+    # Defense in depth: refuse forbidden system roots.
+    try:
+        if str(wiki_path.resolve()) in _LLM_WIKI_FORBIDDEN_ROOTS:
+            return pages
+    except Exception:
+        return pages
+    iterated = 0
     for dirname in _LLM_WIKI_PAGE_DIRS:
         section = wiki_path / dirname
         if not section.exists() or not section.is_dir():
             continue
         for item in section.rglob("*.md"):
+            iterated += 1
+            if iterated > _LLM_WIKI_MAX_FILES:
+                return pages  # bounded
             try:
                 rel = item.relative_to(section)
                 if item.is_file() and not any(part.startswith(".") for part in rel.parts):
