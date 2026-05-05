@@ -8,6 +8,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 STREAMING_PY = (REPO / "api" / "streaming.py").read_text(encoding="utf-8")
 MESSAGES_JS = (REPO / "static" / "messages.js").read_text(encoding="utf-8")
+ROUTES_PY = (REPO / "api" / "routes.py").read_text(encoding="utf-8")
 UI_JS = (REPO / "static" / "ui.js").read_text(encoding="utf-8")
 CSS = (REPO / "static" / "style.css").read_text(encoding="utf-8")
 
@@ -60,4 +61,30 @@ def test_ui_formats_and_renders_turn_duration_in_footer_and_activity_summary():
     )
     assert ".msg-duration-inline" in CSS and ".tool-call-group-duration" in CSS, (
         "Duration UI should have explicit CSS hooks for the footer chip and compact activity summary."
+    )
+
+
+def test_active_compact_activity_elapsed_timer_uses_persisted_start_time():
+    assert '"pending_started_at": s.pending_started_at' in ROUTES_PY, (
+        "/api/chat/start should return the persisted pending_started_at timestamp "
+        "so the live timer starts from backend/session truth."
+    )
+    assert "startData.pending_started_at" in MESSAGES_JS, (
+        "send() should copy chat-start pending_started_at into S.session before "
+        "attaching the live stream."
+    )
+    assert "function _formatActiveElapsedTimer" in UI_JS and "padStart(2,'0')" in UI_JS, (
+        "ui.js should format the running timer in MM:SS form."
+    )
+    assert "data-turn-started-at" in UI_JS and "data-active-turn-elapsed" in UI_JS, (
+        "Live compact Activity groups need stable start-time and active-elapsed "
+        "hooks for browser QA and reconnect/rerender safety."
+    )
+    assert "Working " in UI_JS, (
+        "The in-progress Activity summary should distinguish the live counter "
+        "from the settled 'Done in …' duration."
+    )
+    assert "setInterval" in UI_JS and "_clearActivityElapsedTimer" in UI_JS, (
+        "The active elapsed label should tick while running and clear its interval "
+        "on terminal/error/session-switch cleanup paths."
     )

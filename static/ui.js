@@ -1420,6 +1420,72 @@ function _formatTurnDuration(seconds){
   if(h)return`${h}h ${m}m`;
   return`${m}m ${s}s`;
 }
+function _formatActiveElapsedTimer(seconds){
+  const n=Number(seconds);
+  if(!Number.isFinite(n)||n<0)return'';
+  const total=Math.max(0,Math.floor(n));
+  const m=Math.floor(total/60);
+  const s=total%60;
+  return`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+let _activityElapsedTimer=null;
+let _activityElapsedTimerGroup=null;
+function _activityElapsedStartedAt(group){
+  if(!group)return null;
+  const raw=(group.dataset&&group.dataset.turnStartedAt!==undefined&&group.dataset.turnStartedAt!=='')
+    ?group.dataset.turnStartedAt
+    :(S.session&&S.session.pending_started_at);
+  const started=Number(raw);
+  return Number.isFinite(started)&&started>0?started:null;
+}
+function _activityElapsedLabel(group){
+  const started=_activityElapsedStartedAt(group);
+  if(!started)return'';
+  return _formatActiveElapsedTimer((Date.now()/1000)-started);
+}
+function _setActivityElapsedStartedAt(group){
+  if(!group||group.getAttribute('data-live-tool-call-group')!=='1')return;
+  const started=_activityElapsedStartedAt(group);
+  if(started)group.setAttribute('data-turn-started-at',String(started));
+}
+function _updateActiveActivityElapsedTimer(){
+  const group=_activityElapsedTimerGroup;
+  if(!group||!group.isConnected||group.getAttribute('data-live-tool-call-group')!=='1'){
+    _clearActivityElapsedTimer();
+    return;
+  }
+  const durationEl=group.querySelector('.tool-call-group-duration');
+  const label=_activityElapsedLabel(group);
+  if(label){
+    group.setAttribute('data-active-turn-elapsed',label);
+  }else{
+    group.removeAttribute('data-active-turn-elapsed');
+  }
+  if(durationEl){
+    durationEl.textContent=label?`Working ${label}`:'';
+    durationEl.style.display=label?'':'none';
+  }
+}
+function _startActivityElapsedTimer(group){
+  if(!group||group.getAttribute('data-live-tool-call-group')!=='1')return;
+  _setActivityElapsedStartedAt(group);
+  if(_activityElapsedTimerGroup&&_activityElapsedTimerGroup!==group)_clearActivityElapsedTimer();
+  _activityElapsedTimerGroup=group;
+  _updateActiveActivityElapsedTimer();
+  if(!_activityElapsedTimer)_activityElapsedTimer=setInterval(_updateActiveActivityElapsedTimer,1000);
+}
+function _clearActivityElapsedTimer(){
+  if(_activityElapsedTimer){
+    clearInterval(_activityElapsedTimer);
+    _activityElapsedTimer=null;
+  }
+  if(_activityElapsedTimerGroup&&_activityElapsedTimerGroup.isConnected){
+    _activityElapsedTimerGroup.removeAttribute('data-active-turn-elapsed');
+    const durationEl=_activityElapsedTimerGroup.querySelector('.tool-call-group-duration');
+    if(durationEl){durationEl.textContent='';durationEl.style.display='none';}
+  }
+  _activityElapsedTimerGroup=null;
+}
 
 const _MOBILE_CONFIG_BASE_LABEL='Workspace, model, reasoning, and context settings';
 
@@ -2438,6 +2504,7 @@ function setBusy(v){
   S.busy=v;
   updateSendBtn();
   if(!v){
+    if(typeof _clearActivityElapsedTimer==='function') _clearActivityElapsedTimer();
     setStatus('');
     setComposerStatus('');
     const sid=_queueDrainSid||(S.session&&S.session.session_id);
@@ -3727,7 +3794,9 @@ function ensureActivityGroup(inner, opts){
     if(anchor&&anchor.parentElement===inner) anchor.insertAdjacentElement('afterend', group);
     else inner.appendChild(group);
   }
+  if(live) _setActivityElapsedStartedAt(group);
   _syncToolCallGroupSummary(group);
+  if(live) _startActivityElapsedTimer(group);
   return group;
 }
 function _compressionStateForCurrentSession(){
@@ -4807,9 +4876,17 @@ function _syncToolCallGroupSummary(group){
   }
   if(list) list.textContent=parts.join(' · ')||'tools / thinking';
   if(durationEl){
-    const durationText=_formatTurnDuration(group.dataset.turnDuration);
-    durationEl.textContent=durationText?`Done in ${durationText}`:'';
-    durationEl.style.display=durationText?'':'none';
+    if(group.getAttribute('data-live-tool-call-group')==='1'){
+      const activeText=_activityElapsedLabel(group);
+      if(activeText) group.setAttribute('data-active-turn-elapsed',activeText);
+      else group.removeAttribute('data-active-turn-elapsed');
+      durationEl.textContent=activeText?`Working ${activeText}`:'';
+      durationEl.style.display=activeText?'':'none';
+    }else{
+      const durationText=_formatTurnDuration(group.dataset.turnDuration);
+      durationEl.textContent=durationText?`Done in ${durationText}`:'';
+      durationEl.style.display=durationText?'':'none';
+    }
   }
   if(badge) badge.textContent=String(total);
 }
@@ -4896,6 +4973,7 @@ function appendLiveToolCard(tc){
 }
 
 function clearLiveToolCards(){
+  if(typeof _clearActivityElapsedTimer==='function') _clearActivityElapsedTimer();
   const inner=_assistantTurnBlocks($('liveAssistantTurn'));
   if(inner) inner.querySelectorAll('.tool-call-group[data-live-tool-call-group],.tool-card-row[data-live-tid]').forEach(el=>el.remove());
   // Reset the per-turn user expand intent so the next turn starts at the
@@ -5699,7 +5777,10 @@ function removeThinking(){
   if(blocks) blocks.querySelectorAll('.agent-activity-thinking').forEach(el=>el.remove());
   if(blocks) blocks.querySelectorAll('.tool-call-group[data-agent-activity-group="1"]').forEach(group=>{
     _syncToolCallGroupSummary(group);
-    if(!group.querySelector('.tool-card-row,.agent-activity-thinking')) group.remove();
+    if(!group.querySelector('.tool-card-row,.agent-activity-thinking')){
+      if(typeof _clearActivityElapsedTimer==='function') _clearActivityElapsedTimer();
+      group.remove();
+    }
   });
   if(turn&&blocks&&!blocks.children.length) turn.remove();
 }

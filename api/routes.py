@@ -5986,7 +5986,11 @@ def _handle_chat_start(handler, body):
         daemon=True,
     )
     thr.start()
-    response = {"stream_id": stream_id, "session_id": s.session_id}
+    response = {
+        "stream_id": stream_id,
+        "session_id": s.session_id,
+        "pending_started_at": s.pending_started_at,
+    }
     if normalized_model:
         response["effective_model"] = model
     if model_provider:

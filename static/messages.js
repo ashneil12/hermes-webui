@@ -243,6 +243,9 @@ async function send(){
     }
     streamId=startData.stream_id;
     S.activeStreamId = streamId;
+    if(S.session&&typeof startData.pending_started_at==='number'){
+      S.session.pending_started_at=startData.pending_started_at;
+    }
     if(S.session&&S.session.session_id===activeSid){
       S.session.active_stream_id = streamId;
     }
