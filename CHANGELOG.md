@@ -1,5 +1,46 @@
 # Hermes Web UI -- Changelog
 
+## [v0.51.5] — 2026-05-05 — 4-PR full-sweep batch
+
+### Added
+
+- **PR #1688** by @Michaelyklam — VPS resource health Insights panel (closes #693). New `api/system_health.py` provides a dependency-free Linux/stdlib metrics collector for aggregate CPU (via /proc/stat delta sample), memory (/proc/meminfo), and root disk (shutil.disk_usage). Authenticated `GET /api/system/health` returns sanitized aggregate fields only — no process argv, env, paths, or secrets. The card lives in the Insights tab (NOT always-visible top chrome) per maintainer placement feedback. Polling is gated by `visibilityState` so hidden tabs don't poll, and on macOS/Windows the panel hides itself instead of showing a noisy error. 7 regression tests pin endpoint registration, payload sanitization, Insights placement, and absence from top chrome.
+
+### Fixed
+
+- **PR #1709** by @Michaelyklam — Preserve scroll on stream completion (closes #1690). `_run_background_title_refresh()` and terminal stream handlers were clearing `S.activeStreamId` before the final `renderMessages()` call, while `renderMessages()` chose between `scrollIfPinned()` and `scrollToBottom()` based on stream liveness alone. Result: long stream + user scrolls up to read earlier content + stream finishes → cursor jumped to bottom. Fix adds `_scrollAfterMessageRender(preserveScroll)` helper. When `preserveScroll=true`, calls `scrollIfPinned()` (respects pin state); when false (load/switch path), legacy `scrollToBottom()`. 4 callsites in messages.js terminal-stream paths (`done`, `error`, `cancel`, fallback) pass `{preserveScroll: true}`.
+- **PR #1711** by @nesquena-hermes — Hide 'Double-click to rename' tooltip on folders (closes #1710). Workspace file-tree row tooltip said "Double-click to rename" on every entry — including folders. But folder dblclick navigates via `loadDir()`, not rename; rename for folders lives in the right-click context menu. The tooltip was misleading. 4-line fix in `_renderTreeItems()`: gate `nameEl.title = t('double_click_rename')` on `item.type !== 'dir'`. Reported by @Deor in the WebUI Discord testers thread May 5 2026.
+- **PR #1712** by @24601 — Guard `localStorage.setItem('hermes-webui-model')` against `QuotaExceededError`. On setups with localStorage near quota, the bare `setItem` call threw an unhandled `DOMException` that broke model selection and prevented the chat UI from loading. Wraps both callsites (boot.js modelSelect.onchange handler, onboarding.js _saveOnboardingDefaults) in `try{...}catch{}` so the error is silently absorbed and the UI falls back to server-side model state on next load. The stored value (a model ID string) is tiny — quota failure is from overall localStorage pressure, not this key.
+
+### Tests
+
+4504 → **4527 passing** (+23 regression tests across the 4 PRs, mostly from #1688's 7-test suite). 0 regressions. Full suite ~130s.
+
+### Pre-release verification
+
+- Stage-302: 4 PRs merged with zero conflicts (each rebased clean against current master). Zero stage-applied edits to any file — every change ships exactly as the contributor wrote it.
+- All JS files syntax-clean (`node -c static/{boot,messages,onboarding,panels,ui}.js`).
+- All Python files syntax-clean (py_compile on every changed file).
+- Live browser walkthrough on port 8789:
+  - `/api/system/health` returns sanitized JSON with CPU/memory/disk percentages (no /proc paths, no argv leakage)
+  - System health card renders in Insights with Live badge + 3 progress bars (visual rated 9.5/10 via vision check)
+  - System health card NOT in top chrome (per nesquena placement feedback)
+  - Sidebar scroll holds at 400px (carry-over fix from v0.51.2 preserved)
+  - `_scrollAfterMessageRender` 4-branch behavioral test all correct (preserveScroll respects pin state in all paths)
+  - Recent-release feature inventory verified: PR #1644 model picker chip, PR #1685 Codex spark group, PR #1684 update banner network detection, PR #1671 quota card endpoint, PR #1676 heartbeat banner default-hidden, PR #1664 LLM Wiki endpoint, PR #1662 Logs nav button (via aria-label), PR #1706 paste-multiple fix
+- Opus advisor: SHIP, 6/6 verification clean, 0 MUST-FIX, 0 SHOULD-FIX. Two non-blocking observations:
+  - `/api/system/health` could use `Cache-Control: no-store` (optional, defensive)
+  - `}catch{}` in #1712 swallows all errors silently (acceptable for 2-LOC defensive guard)
+
+### Notes on this sweep
+
+- **#1686** (Docker enhance by @binhpt310) was held back. Opus advisor flagged a blocker: the PR's `docker-compose.yml` change (`build context: ..`) and `COPY hermes-agent-desktop/...` Dockerfile additions assume a sibling `hermes-agent-desktop/` directory at clone time, which would break standalone clones. Left open for follow-up.
+- **#1712** was force-pushed mid-sweep to a simpler form (drops `console.warn`). v2 adopted; fits in the original `test_provider_mismatch.py` 1100-char window so no test widening needed.
+- **#1688** was on the held list (ux + hold labels) but per maintainer call ("Looks much better, thanks! Going to move towards review and merge"), labels removed and PR included in batch. CI was already green on all 3 Python versions.
+
+Closes #693, #1690, #1710.
+
+
 ## [v0.51.5] — 2026-05-05 — single-PR hotfix (#1707)
 
 ### Fixed
