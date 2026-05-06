@@ -296,9 +296,19 @@ function _closeImgLightbox(lb) {
 }
 
 document.addEventListener('click', e => {
-  const img = e.target && e.target.closest ? e.target.closest('.msg-media-img') : null;
-  if(!img) return;
-  _openImgLightbox(img.src, img.alt);
+  if(!e.target || !e.target.closest) return;
+  // Message-attached images (already wired since v0.50.x).
+  let img = e.target.closest('.msg-media-img');
+  if(img){ _openImgLightbox(img.src, img.alt); return; }
+  // Composer attach-tray image thumbnails — click any pasted/dropped image
+  // chip to lightbox-zoom it before sending. Excludes audio/video chips,
+  // which keep their inline media controls. SVG thumbnails (.attach-thumb--svg)
+  // are still images visually, so they qualify.
+  img = e.target.closest('.attach-thumb');
+  if(img && img.tagName === 'IMG'){
+    _openImgLightbox(img.src, img.alt || img.title || 'Attached image');
+    return;
+  }
 });
 
 const _IMAGE_EXTS=/\.(png|jpg|jpeg|gif|webp|bmp|ico|avif)$/i;

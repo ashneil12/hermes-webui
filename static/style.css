@@ -894,7 +894,8 @@
   .attach-chip--audio,.attach-chip--video{max-width:260px;}
   .attach-media-icon{display:inline-flex;align-items:center;color:var(--accent-text);}
   .attach-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .attach-thumb{width:56px;height:56px;object-fit:cover;border-radius:4px;display:block;cursor:default;}
+  .attach-thumb{width:56px;height:56px;object-fit:cover;border-radius:4px;display:block;cursor:zoom-in;transition:filter .12s ease, transform .12s ease;}
+  .attach-thumb:hover{filter:brightness(1.05);transform:scale(1.04);}
   textarea#msg{width:100%;background:transparent;border:none;outline:none;color:var(--text);font-size:16px;line-height:1.65;padding:12px 16px 6px;resize:none;min-height:44px;max-height:200px;font-family:inherit;}
   textarea#msg::placeholder{color:var(--muted);}
   .composer-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 10px 10px;position:relative;container-type:inline-size;container-name:composer-footer;}
