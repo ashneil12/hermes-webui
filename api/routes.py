@@ -2945,7 +2945,11 @@ def _terminal_session_and_workspace(body_or_query):
     try:
         s = get_session(sid)
     except KeyError:
-        raise KeyError("Session not found")
+        explicit_workspace = str(body_or_query.get("workspace", "")).strip()
+        if not explicit_workspace:
+            raise KeyError("Session not found")
+        workspace = resolve_trusted_workspace(explicit_workspace)
+        return sid, workspace
     workspace = resolve_trusted_workspace(getattr(s, "workspace", "") or "")
     return sid, workspace
 
