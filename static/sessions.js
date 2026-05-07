@@ -9,6 +9,7 @@ const ICONS={
   dup:'<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="4.5" y="4.5" width="8.5" height="8.5" rx="1.5"/><path d="M3 11.5V3h8.5"/></svg>',
   trash:'<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3.5 4.5h9M6.5 4.5V3h3v1.5M4.5 4.5v8.5h7v-8.5"/><line x1="7" y1="7" x2="7" y2="11"/><line x1="9" y1="7" x2="9" y2="11"/></svg>',
   more:'<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" stroke="none"><circle cx="8" cy="3" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="8" cy="13" r="1.25"/></svg>',
+  edit:'<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 2.5l2 2L5 13H3v-2z"/><path d="M10 4l2 2"/></svg>',
 };
 
 // Tracks which session_id is currently being loaded. Used to discard stale
@@ -1321,6 +1322,33 @@ function _openSessionActionMenu(session, anchorEl){
   const isExternalSession = isMessagingSession || isCliSession;
   const menu=document.createElement('div');
   menu.className='session-action-menu open';
+  // Rename — first menu item by request (#1764). Double-click rename is
+  // timing-sensitive: the first click frequently registers as "open the
+  // chat" before the second click arrives, so users open the conversation
+  // when they meant to rename it. Putting Rename in the menu eliminates
+  // the timing entirely. Only shown for sessions that support rename
+  // (read-only imported sessions skip it; same gate as startRename's
+  // _isReadOnlySession check).
+  if(!_isReadOnlySession(session)){
+    menu.appendChild(_buildSessionAction(
+      t('session_rename'),
+      t('session_rename_desc'),
+      ICONS.edit,
+      ()=>{
+        closeSessionActionMenu();
+        // Find the row for this session and call its attached startRename.
+        // Falls back to a no-op toast if the row isn't currently rendered
+        // (e.g. archived-and-hidden) — extremely rare since the menu only
+        // opens from a visible row's three-dot button.
+        const row=document.querySelector('.session-item[data-sid="'+session.session_id+'"]');
+        if(row && typeof row._startRename === 'function'){
+          row._startRename();
+        } else if(typeof showToast==='function'){
+          showToast(t('session_rename_failed_no_row')||'Could not start rename — row not found.', 3000, 'error');
+        }
+      }
+    ));
+  }
   menu.appendChild(_buildSessionAction(
     session.pinned?t('session_unpin'):t('session_pin'),
     session.pinned?t('session_unpin_desc'):t('session_pin_desc'),
@@ -2475,6 +2503,13 @@ function renderSessionListFromCache(){
       title.replaceWith(inp);
       setTimeout(()=>{inp.focus();inp.select();},10);
     };
+    // Expose the rename closure on the row so the three-dot action menu
+    // (`_openSessionActionMenu`, defined elsewhere) can trigger it without
+    // needing a separate DOM hunt or a duplicate copy of all this state
+    // (oldTitle / applyTitle / finish / _renamingSid bookkeeping). The
+    // double-click path on this element still calls startRename() directly.
+    el._startRename = startRename;
+    el.dataset.sid = s.session_id;
 
     // (Project dot is appended above, between title and timestamp, so it
     // sits outside the truncating title span and stays visible.)

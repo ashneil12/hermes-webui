@@ -4022,6 +4022,9 @@ def handle_post(handler, parsed) -> bool:
     if parsed.path == "/api/file/reveal":
         return _handle_file_reveal(handler, body)
 
+    if parsed.path == "/api/file/path":
+        return _handle_file_path(handler, body)
+
     # ── Workspace management (POST) ──
     if parsed.path == "/api/workspaces/add":
         return _handle_workspace_add(handler, body)
@@ -6619,7 +6622,13 @@ def _handle_file_reveal(handler, body):
     try:
         target = safe_resolve(Path(s.workspace), body["path"])
         if not target.exists():
-            return bad(handler, "File not found", 404)
+            # Include the resolved server-side path in the error message so
+            # the frontend toast can show *which* file the system expected.
+            # Useful when a stale session row still references a deleted file
+            # (#1764 — Cygnus's screenshot showed a "Failed to reveal: not
+            # found" toast that dropped the path entirely, leaving no clue
+            # what was missing).
+            return bad(handler, f"File not found: {target}", 404)
 
         system = platform.system()
         if system == "Darwin":
@@ -6631,6 +6640,35 @@ def _handle_file_reveal(handler, body):
             subprocess.Popen(["xdg-open", str(target.parent)])
 
         return j(handler, {"ok": True, "path": body["path"]})
+    except (ValueError, PermissionError, OSError) as e:
+        return bad(handler, _sanitize_error(e))
+
+
+def _handle_file_path(handler, body):
+    """Resolve a relative workspace-rooted path into an absolute on-disk path.
+
+    The right-click "Copy file path" action (#1764) wants to put the
+    absolute path on the user's clipboard so they can paste it into a
+    terminal, editor, or anywhere else without having to round-trip through
+    the OS file browser. The frontend can't compute the absolute path on
+    its own — `safe_resolve` joins against the session's workspace root
+    which only the server knows. The handler here is a thin lookup; no
+    filesystem mutation, no OS-specific dispatch. We do NOT require the
+    target to exist (unlike `_handle_file_reveal`) — copying the path of a
+    just-deleted file is still useful, and refusing would force callers
+    to special-case 404s for an action that cannot fail destructively.
+    """
+    try:
+        require(body, "session_id", "path")
+    except ValueError as e:
+        return bad(handler, str(e))
+    try:
+        s = get_session(body["session_id"])
+    except KeyError:
+        return bad(handler, "Session not found", 404)
+    try:
+        target = safe_resolve(Path(s.workspace), body["path"])
+        return j(handler, {"ok": True, "path": str(target)})
     except (ValueError, PermissionError, OSError) as e:
         return bad(handler, _sanitize_error(e))
 

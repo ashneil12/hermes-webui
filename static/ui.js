@@ -6145,8 +6145,48 @@ function _showFileContextMenu(e, item){
   revealItem.style.cssText='padding:7px 14px;cursor:pointer;font-size:13px;color:var(--text);';
   revealItem.onmouseenter=()=>revealItem.style.background='var(--hover)';
   revealItem.onmouseleave=()=>revealItem.style.background='';
-  revealItem.onclick=async()=>{menu.remove();try{await api('/api/file/reveal',{method:'POST',body:JSON.stringify({session_id:S.session.session_id,path:item.path})});}catch(err){showToast(t('reveal_failed')+err.message);}};
+  revealItem.onclick=async()=>{menu.remove();try{await api('/api/file/reveal',{method:'POST',body:JSON.stringify({session_id:S.session.session_id,path:item.path})});}catch(err){showToast(t('reveal_failed')+(err.message||err));}};
   menu.appendChild(revealItem);
+
+  // Copy file path — resolves the absolute on-disk path on the server (so the
+  // user gets the full /home/.../workspace/foo.py rather than the relative
+  // path the file tree shows) and writes it to the OS clipboard. Useful for
+  // pasting into terminals, editors, or other apps without taking the slower
+  // Reveal-in-Finder round trip.
+  const copyPathItem=document.createElement('div');
+  copyPathItem.textContent=t('copy_file_path');
+  copyPathItem.style.cssText='padding:7px 14px;cursor:pointer;font-size:13px;color:var(--text);';
+  copyPathItem.onmouseenter=()=>copyPathItem.style.background='var(--hover)';
+  copyPathItem.onmouseleave=()=>copyPathItem.style.background='';
+  copyPathItem.onclick=async()=>{
+    menu.remove();
+    try{
+      const r=await api('/api/file/path',{method:'POST',body:JSON.stringify({session_id:S.session.session_id,path:item.path})});
+      const abs=(r&&r.path)||item.path;
+      try{
+        await navigator.clipboard.writeText(abs);
+        showToast(t('path_copied'));
+      }catch(clipErr){
+        // Fallback for browsers where Clipboard API is gated (older Safari,
+        // non-secure contexts). Use the legacy execCommand path against a
+        // hidden textarea — this is the same pattern boot.js uses for the
+        // "Copy" buttons on code blocks.
+        const ta=document.createElement('textarea');
+        ta.value=abs;
+        ta.style.cssText='position:fixed;left:-9999px;top:-9999px;';
+        document.body.appendChild(ta);
+        ta.select();
+        let copied=false;
+        try{copied=document.execCommand('copy');}catch(_){}
+        ta.remove();
+        if(copied) showToast(t('path_copied'));
+        else showToast(t('path_copy_failed')+(clipErr&&clipErr.message?clipErr.message:String(clipErr)));
+      }
+    }catch(err){
+      showToast(t('path_copy_failed')+(err.message||err));
+    }
+  };
+  menu.appendChild(copyPathItem);
 
   // Divider + Delete
   const sep=document.createElement('hr');
