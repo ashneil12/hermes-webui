@@ -200,8 +200,17 @@ function _applyDashboardStatus(status){
     btn.classList.toggle('dashboard-link-visible',running);
     btn.style.display=running?'':'none';
     btn.dataset.dashboardUrl=url;
-    btn.title=warning||t('tab_dashboard');
-    btn.setAttribute('aria-label',warning||t('tab_dashboard'));
+    const tipText=warning||t('tab_dashboard');
+    if(btn.hasAttribute('data-tooltip')){
+      // Sync the custom CSS tooltip and explicitly clear the native title so
+      // the slow ~1.5s native browser tooltip does not co-fire alongside the
+      // fast custom tooltip (#1775).
+      btn.setAttribute('data-tooltip',tipText);
+      if(btn.hasAttribute('title')) btn.removeAttribute('title');
+    } else {
+      btn.title=tipText;
+    }
+    btn.setAttribute('aria-label',tipText);
   });
 }
 async function refreshDashboardStatus(force=false){

@@ -308,6 +308,47 @@ class TestI18NTooltipSync(unittest.TestCase):
             "data-tooltip sync does not guard on hasAttribute('data-tooltip')",
         )
 
+    def test_native_title_cleared_when_custom_tooltip_present(self):
+        """When the element has a custom data-tooltip, i18n.js must NOT also
+        set el.title (otherwise the slow ~1.5s native browser tooltip co-fires
+        alongside the fast custom CSS tooltip — exactly the bug #1775 reports).
+        It must explicitly removeAttribute('title') so any stale runtime
+        value gets dropped."""
+        block_match = re.search(
+            r"document\.querySelectorAll\(\s*'\[data-i18n-title\]'\s*\)"
+            r"\.forEach\s*\(\s*el\s*=>\s*\{(.*?)\}\s*\)",
+            self.js,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(block_match, "Could not find data-i18n-title handler")
+        block = block_match.group(1)
+        self.assertRegex(
+            block,
+            r"removeAttribute\s*\(\s*['\"]title['\"]\s*\)",
+            "data-i18n-title handler must clear el.title when data-tooltip is "
+            "present so the native ~1.5s tooltip does not co-fire alongside "
+            "the fast custom CSS tooltip (#1775).",
+        )
+
+    def test_native_title_path_preserved_for_non_tooltip_elements(self):
+        """Elements that opt OUT of custom tooltips (no data-tooltip attribute)
+        must still get el.title from data-i18n-title — falling back gracefully
+        to the native tooltip rather than rendering nothing."""
+        block_match = re.search(
+            r"document\.querySelectorAll\(\s*'\[data-i18n-title\]'\s*\)"
+            r"\.forEach\s*\(\s*el\s*=>\s*\{(.*?)\}\s*\)",
+            self.js,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(block_match, "Could not find data-i18n-title handler")
+        block = block_match.group(1)
+        self.assertIn(
+            "el.title",
+            block,
+            "data-i18n-title handler must still assign el.title for "
+            "elements without data-tooltip (non-rail, non-nav surfaces).",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
