@@ -8741,7 +8741,17 @@ function applyLocaleToDOM() {
   document.querySelectorAll('[data-i18n-title]').forEach(el => {
     const key = el.getAttribute('data-i18n-title');
     const val = t(key);
-    if (val && val !== key) el.title = val;
+    if (!val || val === key) return;
+    if (el.hasAttribute('data-tooltip')) {
+      // Custom CSS tooltip is in use (#1775) — sync it and explicitly clear
+      // the native `title` attribute so the slow ~1.5s browser tooltip never
+      // co-fires alongside the fast custom tooltip.
+      el.setAttribute('data-tooltip', val);
+      if (el.hasAttribute('title')) el.removeAttribute('title');
+    } else {
+      // Element opted out of custom tooltips — fall back to the native title.
+      el.title = val;
+    }
   });
   document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
     const key = el.getAttribute('data-i18n-placeholder');

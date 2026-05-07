@@ -1,5 +1,41 @@
 # Hermes Web UI -- Changelog
 
+## [v0.51.17] — 2026-05-07 — 2-PR contributor batch (kanban early-out + tooltip system overhaul)
+
+### Fixed
+
+- **PR #1780** by @jasonjcwu — Two small kanban-bridge fixes found while auditing the bridge. (1) Stale module docstring still said "deliberately read-only" — updated to reflect the bridge's now-full CRUD surface (create/patch/bulk-update/archive, multi-board, task links, SSE, comments, dispatch). (2) `_board_counts_for_slug()` now does an early `kb.board_exists(slug)` check before attempting `kb.connect()`, returning an empty dict for boards whose sqlite hasn't been materialized yet (freshly-created boards with no tasks). Avoids an unnecessary connect attempt on the hot board-list path. `api/kanban_bridge.py +9/-5`, `tests/test_kanban_bridge.py +29/-30` (added `test_board_counts_returns_empty_for_nonexistent_board` + `test_board_counts_returns_real_counts_for_populated_board`, replacing the old init_db approach with the cleaner board_exists pattern).
+
+- **PR #1782** by @jasonjcwu — Replace native `title=""` tooltips with custom CSS tooltips on navigation surfaces (closes #1775; reported by @cygnusignis on the WebUI Discord testers thread: "It would be great to have tooltips for icons in the left ribbon — Edit: Oh wait, they are there. They just take an oddly long time to appear?"). The native browser tooltip's ~1.5s hover delay reads as "no tooltip exists" for a chunk of users. Custom CSS tooltips appear at ~150ms instead. **Substantial maintainer-side polish layered on top of the contributor PR during stage prep, addressing issues found via browser-based verification:**
+  - **Core fix the original PR missed**: `static/i18n.js` was setting `el.title = val` even when the element has `data-tooltip`, so the slow native tooltip co-fired alongside the fast custom CSS tooltip. Fixed by branching: when `data-tooltip` is present, sync `data-tooltip` AND `removeAttribute('title')`. Same pattern applied to `_applyDashboardStatus` in `static/ui.js` (was hardcoding `btn.title=warning`) and 6 callsites in `static/boot.js` refactored through a new `_setButtonTooltip()` helper. Browser-verified: 0 of 73 has-tooltip elements have a stuck `title` attribute at runtime (was 94 native + 2 stuck via the dashboard-status JS path before the fix).
+  - **CSS rewrite**: solid `var(--surface)` background (#1A1A2E), gold-tinted `var(--accent-bg-strong)` border (subtle brand tie-in), warm-white `var(--text)` foreground, **z-index 1500** (was 60 — clears all sidebar/panel stacking contexts), 8px/24px shadow with 0.65 alpha + 1px ring at 0.35 alpha + 1px inner highlight at 0.04 alpha (was 2px/8px / 0.25 alpha — too subtle), **150ms hover-onset / 0ms dismissal delay** matching Cygnus's spec in #1775.
+  - **Arrow removed entirely**: at 5px borders the triangle was too small to read clearly and was rendering as a thin rectangle (the global `box-sizing: border-box` reset made the colored border eat inward from a 10×10 box rather than projecting outward from a 0×0 box). VS Code, Slack, and Linear's rail-icon tooltips also skip arrows — spatial proximity at 8px gap is sufficient association.
+  - **Coverage extended to 11 more high-traffic icon buttons**: `btnAttach`, `btnMic`, `btnVoiceMode` (composer icons, side-positioned), `btnSend` (composer right edge, see `--left` variant below), `btnCollapseWorkspacePanel`, `btnUpDir`, `btnNewFile`, `btnNewFolder`, `btnRefreshPanel`, `btnClearPreview` (workspace panel header, bottom-positioned). Final coverage: 73 elements (rail 12 + sidebar nav-tabs 12 + panel-head 31 + composer/workspace icons 11 + hamburger 1 + dashboard rail 1 + dashboard mobile 1 + breakdown elsewhere ≈ 4).
+  - **Container-overflow escape**: `.panel-header` was changed from `overflow:hidden` to `overflow:visible` so workspace-panel-header tooltips can escape the bar (otherwise `New file`, `New folder`, `Refresh`, etc. tooltips were getting clipped at the panel-header boundary). The title-text ellipsis is preserved because the inner span `.panel-header > span:first-child` already owns its own `overflow:hidden + text-overflow:ellipsis` for the workspace-name truncation.
+  - **Right-edge clipping fix**: `btnSend`'s side-positioned tooltip extended past the viewport edge in narrow viewports ("Se..." visible in maintainer screenshot review). Added new `.has-tooltip--left` variant that flips the tooltip to the LEFT of the trigger via `right: calc(100% + 8px)`. Applied to `btnSend`. Coordinate-math audit at 1280px viewport: all 15 side-positioned tooltips fit within viewport, no clipping.
+  - **Removed `btnWorkspacePanelToggle` from custom tooltip system**: the chip's `composer-workspace-group { overflow: hidden }` is required for `border-radius:999px` rounded-pill clipping. Per user feedback ("don't add tooltips when something already has a visible label or it's super obvious what it is"), reverted to native `title=` since the adjacent `.composer-workspace-chip` label already shows the current workspace path.
+  - **5 pre-existing tests updated** to be tolerant of either `title=` or `data-tooltip=`: `tests/test_cron_refresh_button_835.py::test_refresh_button_has_accessibility_labels`, `tests/test_mobile_layout.py::test_profiles_sidebar_tab_present`, `tests/test_sprint20.py::test_mic_button_has_mic_btn_class`, `tests/test_sprint20b.py::test_send_button_has_title_attribute`, `tests/test_sprint20b.py::test_send_button_still_has_send_btn_class`. One `test_workspace_panel_session_list.py` test updated to recognize that `panel-header` overflow handling moved to its inner span.
+  - **3 new regression tests** in `tests/test_css_tooltips.py`: `test_native_title_cleared_when_custom_tooltip_present` (pins the `removeAttribute('title')` call), `test_native_title_path_preserved_for_non_tooltip_elements` (pins the `el.title` fallback for elements without `data-tooltip`), plus the original 17 still pass for a total of 19.
+
+  Browser-verified each major surface (rail Tasks, rail Settings, composer Attach files, composer Send message [via `--left` variant], workspace panel New folder). 5 polish iterations + screenshot review with maintainer.
+
+### Tests
+
+4716 → **4723 collected** (+7). 4716 passed, 4 skipped (2 dev-only spawn from v0.51.15 + 2 prong-2 noise), 3 xpassed, 0 failed in 141s.
+
+### Pre-release verification
+
+- All 2 PRs CI-green (PR #1780) / pending-with-fixes-in-stage (PR #1782 — original PR head failed CI on the test-update misses, all addressed in stage-311's maintainer-side polish layer).
+- File overlap: NONE — disjoint files between #1780 (`api/kanban_bridge.py`) and #1782 (frontend tooltip system).
+- All JS/Python files syntax-clean.
+- `scripts/run-browser-tests.sh`: all 11 endpoints PASS on isolated port 8789.
+- Pre-stamp re-fetch: both PR heads still match local rebases.
+- Coordinate-math audit: all 15 side-positioned tooltips fit within 1280px viewport (rail Chat/Tasks/Kanban/Skills/Memory/Spaces/Profiles/Todos/Insights/Logs/Settings + composer Attach files/Dictate + workspace toggle + send-message left-flip).
+- Browser-verified: zero stuck `title` attributes on has-tooltip elements at runtime.
+- Opus advisor reviewed PR head + brief; called out (1) CI failures on un-updated tests and (2) i18n.js title leak — BOTH fixed in stage-311's maintainer-side polish layer that Opus couldn't see (it reviews the contributor PR head, not the stage). Verified via `git log` + `grep` that all polish commits are in `stage-311` before push.
+
+Closes #1775.
+
 ## [v0.51.16] — 2026-05-07 — 3-PR contributor batch (anthropic env race close, CLI tool metadata, model picker reset)
 
 ### Fixed
